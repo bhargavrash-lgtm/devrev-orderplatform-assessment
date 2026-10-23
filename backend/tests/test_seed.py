@@ -1,3 +1,4 @@
+import os
 import re
 import sqlite3
 from datetime import datetime, timezone
@@ -8,8 +9,8 @@ import pytest
 import seed as seed_module
 from db import connect, init_db
 
-OPS_PASSWORD = "ops-test-password"
-CUSTOMER_PASSWORD = "customer-test-password"
+OPS_PASSWORD = os.environ["SEED_OPS_PASSWORD"]  # set by conftest if missing
+CUSTOMER_PASSWORD = os.environ["SEED_CUSTOMER_PASSWORD"]
 
 TABLES = ["customers", "users", "products", "orders", "order_items", "order_events",
           "issues", "order_messages", "attachments", "order_feedback", "customer_contacts",

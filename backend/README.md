@@ -31,6 +31,29 @@ $env:SEED_CUSTOMER_PASSWORD = 'choose-another-password'
 
 The database file is `backend/data.db`. Set `ORDERWAVE_DB_PATH` to use a different file.
 
+### Session settings
+
+- `SESSION_SECRET` signs the login cookie. It must be at least 32 characters, or the server refuses to start. Generate one with:
+
+  ```bash
+  python -c "import secrets; print(secrets.token_hex(32))"
+  ```
+
+  Changing it logs everyone out.
+- `COOKIE_SECURE`: set to `true` in production so the cookie is only sent over HTTPS. Leave it unset or `false` for `http://localhost`.
+
+```bash
+# macOS / Linux
+export SESSION_SECRET="$(python -c 'import secrets; print(secrets.token_hex(32))')"
+export COOKIE_SECURE=false
+```
+
+```powershell
+# Windows PowerShell
+$env:SESSION_SECRET = python -c "import secrets; print(secrets.token_hex(32))"
+$env:COOKIE_SECURE = 'false'
+```
+
 ## Seed the database
 
 ```bash
@@ -57,11 +80,26 @@ The demo data has patterns worth finding:
 uvicorn main:app --reload
 ```
 
-The app creates any missing tables on startup. Check it with:
+The app checks `SESSION_SECRET` and creates any missing tables on startup. Check it with:
 
 ```bash
 curl http://127.0.0.1:8000/api/health
 # {"status":"ok"}
+```
+
+## Authentication
+
+- `POST /api/auth/login` takes `{"email", "password"}`. It sets a signed, HTTP-only, SameSite=Lax session cookie that holds only the user id and lasts 8 hours, and returns `{id, email, full_name, role, customer_id}`. A wrong password and an unknown email both return 401 `{"error": "Invalid email or password"}`. After 5 failed attempts for one email within 10 minutes, it returns 429 until the window passes. The counter is kept in memory, per process.
+- `POST /api/auth/logout` clears the cookie.
+- `GET /api/auth/me` returns the current user, or 401.
+
+Routes protect themselves with the dependencies in `auth.py`: `get_current_user` (401 without a valid session) and `require_ops` (403 unless the role is `ops`). Every error response has the shape `{"error": "message"}`.
+
+```bash
+curl -c cookies.txt -H 'Content-Type: application/json' \
+  -d '{"email":"sundaram@orderwave.demo","password":"<SEED_CUSTOMER_PASSWORD>"}' \
+  http://127.0.0.1:8000/api/auth/login
+curl -b cookies.txt http://127.0.0.1:8000/api/auth/me
 ```
 
 ## Tests
@@ -70,4 +108,4 @@ curl http://127.0.0.1:8000/api/health
 pytest
 ```
 
-The tests build a temporary database and seed it, so they never touch `data.db`.
+The tests build a temporary database and seed it, so they never touch `data.db`. They read `SEED_OPS_PASSWORD`, `SEED_CUSTOMER_PASSWORD` and `SESSION_SECRET` from the environment, and use random values for any that aren't set.

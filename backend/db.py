@@ -15,10 +15,21 @@ def db_path() -> Path:
 
 
 def connect(path: str | Path | None = None) -> sqlite3.Connection:
-    conn = sqlite3.connect(path or db_path())
+    # check_same_thread=False: FastAPI may open the connection in one worker thread and use it
+    # in another. Each request still gets its own connection (see get_db).
+    conn = sqlite3.connect(path or db_path(), check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
+
+
+def get_db():
+    """FastAPI dependency: one connection per request, closed afterwards."""
+    conn = connect()
+    try:
+        yield conn
+    finally:
+        conn.close()
 
 
 def init_db(path: str | Path | None = None) -> None:
