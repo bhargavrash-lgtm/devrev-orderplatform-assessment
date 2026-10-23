@@ -13,7 +13,7 @@ SQLite, defined in [`backend/schema.sql`](backend/schema.sql).
 - Customer master: `customers` (code, tier, region, account owner, contract value, renewal date, status), `customer_contacts`, `customer_addresses`, `customer_interactions`.
 - Catalogue and orders: `products`, `orders` (with delivery address and the client's network state when the order was placed), `order_items`, `order_events` (status history).
 - After the order: `order_messages`, `issues` (with an optional Jira key), `order_feedback`, `product_reviews`, `attachments`.
-- Views: `customer_summary` (order count, lifetime value, open issues, average rating and negative interactions per customer) and `customer_timeline` (orders, issues, messages, feedback and interactions in one stream).
+- Views: `customer_summary` (order count, lifetime value, issue counts, average rating and negative interactions per customer; `unresolved_issues` means open or investigating, and `open_issues_only` counts only newly reported issues not yet being worked on) and `customer_timeline` (orders, issues, messages, feedback and interactions in one stream).
 
 ## API
 

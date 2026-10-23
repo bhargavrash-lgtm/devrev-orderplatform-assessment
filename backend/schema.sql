@@ -168,19 +168,26 @@ CREATE INDEX IF NOT EXISTS idx_addresses_customer ON customer_addresses(customer
 CREATE INDEX IF NOT EXISTS idx_reviews_product ON product_reviews(product_id);
 CREATE INDEX IF NOT EXISTS idx_reviews_customer ON product_reviews(customer_id);
 
-CREATE VIEW IF NOT EXISTS customer_summary AS
+-- Views are dropped and recreated on every startup, so an existing data.db picks up
+-- changes to their definitions without reseeding.
+-- Issue counts: unresolved = open + investigating; open_issues_only = status exactly 'open'.
+DROP VIEW IF EXISTS customer_summary;
+CREATE VIEW customer_summary AS
 SELECT c.id AS customer_id, c.name,
   (SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id) AS order_count,
   (SELECT COALESCE(SUM(total),0) FROM orders o WHERE o.customer_id = c.id AND o.order_status != 'cancelled') AS lifetime_value,
   (SELECT MAX(created_at) FROM orders o WHERE o.customer_id = c.id) AS last_order_at,
-  (SELECT COUNT(*) FROM issues i JOIN orders o ON o.id = i.order_id WHERE o.customer_id = c.id AND i.status != 'resolved') AS open_issues,
+  (SELECT COUNT(*) FROM issues i JOIN orders o ON o.id = i.order_id WHERE o.customer_id = c.id AND i.status IN ('open','investigating')) AS unresolved_issues,
+  (SELECT COUNT(*) FROM issues i JOIN orders o ON o.id = i.order_id WHERE o.customer_id = c.id AND i.status = 'open') AS open_issues_only,
+  (SELECT COUNT(*) FROM issues i JOIN orders o ON o.id = i.order_id WHERE o.customer_id = c.id AND i.status = 'investigating') AS investigating_issues,
   (SELECT COUNT(*) FROM issues i JOIN orders o ON o.id = i.order_id WHERE o.customer_id = c.id) AS total_issues,
   (SELECT ROUND(AVG(f.rating),2) FROM order_feedback f JOIN orders o ON o.id = f.order_id WHERE o.customer_id = c.id) AS avg_rating,
   (SELECT COUNT(*) FROM customer_interactions x WHERE x.customer_id = c.id AND x.sentiment = 'negative') AS negative_interactions,
   (SELECT MAX(created_at) FROM customer_interactions x WHERE x.customer_id = c.id) AS last_interaction_at
 FROM customers c;
 
-CREATE VIEW IF NOT EXISTS customer_timeline AS
+DROP VIEW IF EXISTS customer_timeline;
+CREATE VIEW customer_timeline AS
 SELECT o.customer_id, 'order' AS event_type, o.created_at AS event_at, o.id AS order_id,
        'Order #' || o.id || ' placed, total ' || o.total
          || CASE WHEN o.client_network != 'good' THEN ' (client network: ' || o.client_network || ')' ELSE '' END

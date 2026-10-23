@@ -24,6 +24,17 @@ CLIENT_NETWORKS = ("good", "weak", "offline_sync")
 ISSUE_CATEGORIES = ("delay", "wrong_item", "damaged", "duplicate_order", "billing", "other")
 ISSUE_SEVERITIES = ("low", "medium", "high")
 ISSUE_STATUSES = ("open", "investigating", "resolved")
+# Status filters for list_issues and recurring_issues. 'unresolved' is the default.
+ISSUE_STATUS_FILTERS = {
+    "unresolved": ("open", "investigating"),
+    "open": ("open",),
+    "investigating": ("investigating",),
+    "resolved": ("resolved",),
+    "all": ISSUE_STATUSES,
+}
+DEFAULT_ISSUE_STATUS = "unresolved"
+ISSUE_STATUS_MEANING = ("unresolved means status is open or investigating; open means newly reported and not yet "
+                        "being worked on; all includes resolved issues too.")
 TIERS = ("enterprise", "mid_market", "small")
 CUSTOMER_STATUSES = ("active", "at_risk", "churned")
 INTERACTION_TYPES = ("call", "email", "meeting", "note", "escalation", "renewal")
@@ -112,6 +123,15 @@ class Where:
         if value:
             self.add(f"(lower({alias}.customer_code) = lower(?) OR {alias}.name LIKE ? ESCAPE '\\')",
                      value.strip(), _contains(value.strip()))
+
+    def issue_status(self, status: str | None, alias: str = "i") -> str:
+        """Filter issues by a status filter (default 'unresolved'). Returns the filter used."""
+        status = status or DEFAULT_ISSUE_STATUS
+        if status not in ISSUE_STATUS_FILTERS:
+            raise ValueError(f"status must be one of: {', '.join(ISSUE_STATUS_FILTERS)}. {ISSUE_STATUS_MEANING}")
+        values = ISSUE_STATUS_FILTERS[status]
+        self.add(f"{alias}.status IN ({_placeholders(len(values))})", *values)
+        return status
 
     @property
     def sql(self) -> str:
@@ -223,7 +243,8 @@ def get_data_schema() -> dict:
             "product_reviews": "Rating (1-5) and comment for a product on a delivered order.",
             "attachments": "File metadata only (filename, content_type, size_bytes); contents are not exposed.",
             "customer_summary (view)": "Per customer: order_count, lifetime_value (INR, excluding cancelled), "
-                                       "last_order_at, open_issues, total_issues, avg_rating, "
+                                       "last_order_at, unresolved_issues, open_issues_only, "
+                                       "investigating_issues, total_issues, avg_rating, "
                                        "negative_interactions, last_interaction_at.",
             "customer_timeline (view)": "Per customer: event_type, event_at, order_id, summary.",
         },
@@ -237,6 +258,13 @@ def get_data_schema() -> dict:
             "issue_category": list(ISSUE_CATEGORIES),
             "issue_severity": list(ISSUE_SEVERITIES),
             "issue_status": list(ISSUE_STATUSES),
+            "issue_status_filter": {
+                "unresolved": "open or investigating (the default for list_issues and recurring_issues)",
+                "open": "newly reported and not yet being worked on",
+                "investigating": "being worked on",
+                "resolved": "closed",
+                "all": "every issue, including resolved ones",
+            },
             "customer_tier": list(TIERS),
             "customer_status": list(CUSTOMER_STATUSES),
             "interaction_type": list(INTERACTION_TYPES),
@@ -338,7 +366,8 @@ def get_order(conn, order_id: int) -> dict:
 CUSTOMER_COLUMNS = (
     "c.id, c.customer_code, c.name, c.industry, c.tier, c.region, c.city, c.state, owner.full_name AS owner, "
     "c.annual_contract_value, c.renewal_date, c.status, c.customer_since, s.order_count, s.lifetime_value, "
-    "s.last_order_at, s.open_issues, s.total_issues, s.avg_rating, s.negative_interactions, s.last_interaction_at"
+    "s.last_order_at, s.unresolved_issues, s.open_issues_only, s.investigating_issues, s.total_issues, "
+    "s.avg_rating, s.negative_interactions, s.last_interaction_at"
 )
 CUSTOMER_FROM = ("FROM customers c JOIN customer_summary s ON s.customer_id = c.id "
                  "LEFT JOIN users owner ON owner.id = c.account_owner_id")
@@ -353,8 +382,9 @@ def _customer(r: sqlite3.Row) -> dict:
         "customer_since": r["customer_since"],
         "summary": {
             "order_count": r["order_count"], "lifetime_value": r["lifetime_value"],
-            "last_order_at": iso(r["last_order_at"]), "open_issues": r["open_issues"],
-            "total_issues": r["total_issues"], "avg_rating": r["avg_rating"],
+            "last_order_at": iso(r["last_order_at"]),
+            "unresolved_issues": r["unresolved_issues"], "open_issues_only": r["open_issues_only"],
+            "investigating_issues": r["investigating_issues"], "total_issues": r["total_issues"], "avg_rating": r["avg_rating"],
             "negative_interactions": r["negative_interactions"],
             "last_interaction_at": iso(r["last_interaction_at"]),
         },
@@ -420,15 +450,13 @@ def list_issues(conn, customer=None, category=None, severity=None, status=None, 
                 from_date=None, to_date=None, limit=None, offset=None) -> dict:
     _check_choice("category", category, ISSUE_CATEGORIES)
     _check_choice("severity", severity, ISSUE_SEVERITIES)
-    _check_choice("status", status, ISSUE_STATUSES)
     where = Where()
+    status = where.issue_status(status)
     where.customer(customer)
     if category:
         where.add("i.category = ?", category)
     if severity:
         where.add("i.severity = ?", severity)
-    if status:
-        where.add("i.status = ?", status)
     if jira_key:
         where.add("lower(i.jira_key) = lower(?)", jira_key.strip())
     if product_sku:
@@ -448,49 +476,66 @@ def list_issues(conn, customer=None, category=None, severity=None, status=None, 
                "jira_key": r["jira_key"], "description": r["description"], "reported_by": r["reported_by"],
                "client_network": r["client_network"], "products": products[r["order_id"]],
                "created_at": iso(r["created_at"])} for r in rows]
-    return {"issues": issues, **meta}
+    return {"status_filter": status, "issues": issues, **meta}
 
 
-def recurring_issues(conn, group_by: str = "category", min_count: int = 2) -> dict:
+def recurring_issues(conn, group_by: str = "category", min_count: int = 2, status: str | None = None) -> dict:
     if group_by not in ISSUE_GROUPS:
         raise ValueError(f"group_by must be one of: {', '.join(ISSUE_GROUPS)}")
     key_sql, needs_products = ISSUE_GROUPS[group_by]  # from the whitelist, never from input
     from_sql = ("FROM issues i JOIN orders o ON o.id = i.order_id JOIN customers c ON c.id = o.customer_id"
                 + (" JOIN order_items oi ON oi.order_id = o.id JOIN products p ON p.id = oi.product_id"
                    if needs_products else ""))
+    where = Where()
+    status = where.issue_status(status)
+    where.add(f"{key_sql} IS NOT NULL")
     min_count = max(1, int(min_count))
     groups = conn.execute(
         f"SELECT {key_sql} AS key, COUNT(DISTINCT i.id) AS issue_count, "
+        "COUNT(DISTINCT CASE WHEN i.status IN ('open', 'investigating') THEN i.id END) AS unresolved, "
+        "COUNT(DISTINCT CASE WHEN i.status = 'open' THEN i.id END) AS open_only, "
+        "COUNT(DISTINCT CASE WHEN i.status = 'investigating' THEN i.id END) AS investigating, "
         "COUNT(DISTINCT CASE WHEN i.status = 'resolved' THEN i.id END) AS resolved, "
-        "COUNT(DISTINCT CASE WHEN i.status != 'resolved' THEN i.id END) AS open, "
         "MIN(i.created_at) AS first_at, MAX(i.created_at) AS last_at "
-        f"{from_sql} WHERE {key_sql} IS NOT NULL GROUP BY {key_sql} "
+        f"{from_sql}{where.sql} GROUP BY {key_sql} "
         "HAVING COUNT(DISTINCT i.id) >= ? ORDER BY issue_count DESC, key",
-        (min_count,),
+        [*where.params, min_count],
     ).fetchall()
+    in_group = f"{where.sql} AND {key_sql} = ?"
     result = []
     for g in groups[:MAX_LIMIT]:
+        params = [*where.params, g["key"]]
         customers = [r[0] for r in conn.execute(
-            f"SELECT DISTINCT c.name {from_sql} WHERE {key_sql} = ? ORDER BY c.name", (g["key"],))]
+            f"SELECT DISTINCT c.name {from_sql}{in_group} ORDER BY c.name", params)]
         categories = [r[0] for r in conn.execute(
-            f"SELECT DISTINCT i.category {from_sql} WHERE {key_sql} = ? ORDER BY i.category", (g["key"],))]
+            f"SELECT DISTINCT i.category {from_sql}{in_group} ORDER BY i.category", params)]
         examples = [
             {"issue_id": r["id"], "order_id": r["order_id"], "customer": r["name"], "status": r["status"],
              "description": r["description"]}
             for r in conn.execute(
-                f"SELECT DISTINCT i.id, i.order_id, c.name, i.status, i.description, i.created_at {from_sql} "
-                f"WHERE {key_sql} = ? ORDER BY i.created_at DESC LIMIT ?", (g["key"], MAX_EXAMPLES))
+                f"SELECT DISTINCT i.id, i.order_id, c.name, i.status, i.description, i.created_at {from_sql}"
+                f"{in_group} ORDER BY i.created_at DESC LIMIT ?", [*params, MAX_EXAMPLES])
         ]
-        group = {"group": g["key"], "issue_count": g["issue_count"], "open": g["open"], "resolved": g["resolved"],
+        group = {"group": g["key"], "issue_count": g["issue_count"], "unresolved": g["unresolved"],
+                 "open_only": g["open_only"], "investigating": g["investigating"], "resolved": g["resolved"],
                  "affected_customers": customers, "categories": categories,
                  "first_reported_at": iso(g["first_at"]), "last_reported_at": iso(g["last_at"]),
                  "examples": examples}
         if group_by == "product":
             group["product_name"] = conn.execute("SELECT name FROM products WHERE sku = ?", (g["key"],)).fetchone()[0]
         result.append(group)
-    note = ("An issue counts once for every product on its order." if group_by == "product" else None)
-    return {"group_by": group_by, "min_count": min_count, "groups": result, "total": len(groups),
-            "returned": len(result), "truncated": len(groups) > len(result), **({"note": note} if note else {})}
+
+    if status == "all":
+        notes = ["All issues are counted, including resolved ones."]
+    else:
+        excluded = "; resolved issues are excluded" if status != "resolved" else ""
+        notes = [f"Only issues with status '{status}' are counted{excluded}. {ISSUE_STATUS_MEANING} "
+                 "Pass status='all' to see how often a problem has recurred over time."]
+    if group_by == "product":
+        notes.append("An issue counts once for every product on its order.")
+    return {"group_by": group_by, "status_filter": status, "min_count": min_count, "groups": result,
+            "total": len(groups), "returned": len(result), "truncated": len(groups) > len(result),
+            "note": " ".join(notes)}
 
 
 def list_feedback(conn, customer=None, max_rating=None, min_rating=None, from_date=None, to_date=None,

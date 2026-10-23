@@ -68,7 +68,9 @@ OrderStatus = Literal["placed", "confirmed", "packed", "shipped", "delivered", "
 ClientNetwork = Literal["good", "weak", "offline_sync"]
 IssueCategory = Literal["delay", "wrong_item", "damaged", "duplicate_order", "billing", "other"]
 IssueSeverity = Literal["low", "medium", "high"]
-IssueStatus = Literal["open", "investigating", "resolved"]
+IssueStatusFilter = Literal["unresolved", "open", "investigating", "resolved", "all"]
+IssueStatus = Annotated[IssueStatusFilter | None, Field(
+    description="Issue status filter, default unresolved. " + q.ISSUE_STATUS_MEANING)]
 Tier = Literal["enterprise", "mid_market", "small"]
 CustomerStatus = Literal["active", "at_risk", "churned"]
 InteractionType = Literal["call", "email", "meeting", "note", "escalation", "renewal"]
@@ -111,8 +113,9 @@ def get_order(order_id: int) -> dict[str, Any]:
 
 
 @_tool("List customers from the customer master (code, tier, region, account owner, contract value in INR, "
-       "renewal date, status) with summary numbers: order count, lifetime value, open and total issues, average "
-       "rating, negative interactions.")
+       "renewal date, status) with summary numbers: order count, lifetime value, issue counts, average rating, "
+       "negative interactions. Issue counts: unresolved_issues (open or investigating), open_issues_only (newly "
+       "reported, not yet being worked on), investigating_issues and total_issues.")
 def list_customers(
     name: Annotated[str | None, Field(description="Customer code or part of the name.")] = None,
     tier: Tier | None = None,
@@ -124,8 +127,9 @@ def list_customers(
     return _run(q.list_customers, name=name, tier=tier, status=status, region=region, limit=limit, offset=offset)
 
 
-@_tool("Get one customer's profile: master record, contacts (name and title), addresses and summary numbers. "
-       "Identify the customer by customer_id or by name/code.")
+@_tool("Get one customer's profile: master record, contacts (name and title), addresses and summary numbers, "
+       "including unresolved_issues (open or investigating), open_issues_only, investigating_issues and "
+       "total_issues. Identify the customer by customer_id or by name/code.")
 def get_customer_profile(customer_id: int | None = None, name: Customer = None) -> dict[str, Any]:
     return _run(q.get_customer_profile, customer_id=customer_id, name=name)
 
@@ -147,12 +151,13 @@ def get_customer_timeline(
 
 
 @_tool("List issues with their order id, customer, products on the order, category, severity, status, "
-       "description, jira_key and the order's client_network. Newest first.")
+       "description, jira_key and the order's client_network. Newest first. By default only unresolved issues "
+       "are returned: " + q.ISSUE_STATUS_MEANING + " Pass status='all' for every issue.")
 def list_issues(
     customer: Customer = None,
     category: IssueCategory | None = None,
     severity: IssueSeverity | None = None,
-    status: IssueStatus | None = None,
+    status: IssueStatus = "unresolved",
     jira_key: Annotated[str | None, Field(description="Related Jira key, e.g. SCRUM-24.")] = None,
     product_sku: Annotated[str | None, Field(description="Only issues on orders containing this SKU.")] = None,
     from_date: FromDate = None,
@@ -166,13 +171,16 @@ def list_issues(
 
 
 @_tool("Find recurring problems: group issues by category, product, customer, client_network or jira_key and "
-       "return groups with at least min_count issues, with counts, open vs resolved, affected customers and up "
-       "to 3 example descriptions. Use this to spot recurring bugs.")
+       "return groups with at least min_count issues, with status counts (unresolved, open_only, investigating, "
+       "resolved), affected customers and up to 3 example descriptions. Use this to spot recurring bugs. By "
+       "default only unresolved issues are counted: " + q.ISSUE_STATUS_MEANING + " Pass status='all' to "
+       "include resolved issues and see how often a problem has recurred over time.")
 def recurring_issues(
     group_by: IssueGroup = "category",
     min_count: Annotated[int, Field(ge=1, description="Smallest group to return.")] = 2,
+    status: IssueStatus = "unresolved",
 ) -> dict[str, Any]:
-    return _run(q.recurring_issues, group_by=group_by, min_count=min_count)
+    return _run(q.recurring_issues, group_by=group_by, min_count=min_count, status=status)
 
 
 @_tool("List order feedback (one 1-5 rating and comment per delivered order) with order id and customer. "

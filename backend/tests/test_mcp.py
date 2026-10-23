@@ -162,44 +162,125 @@ def test_get_data_schema(client):
 
 
 def test_recurring_issues_by_category(client):
-    result = call(client, "recurring_issues", group_by="category")
+    result = call(client, "recurring_issues", group_by="category", status="all")
+    assert result["status_filter"] == "all"
     groups = {g["group"]: g for g in result["groups"]}
     assert groups["duplicate_order"]["issue_count"] == 4
     assert groups["wrong_item"]["issue_count"] == 3
     assert groups["delay"]["issue_count"] == 3
     assert "damaged" not in groups  # only 1, below min_count 2
     dup = groups["duplicate_order"]
-    assert dup["open"] + dup["resolved"] == 4
+    assert dup["unresolved"] + dup["resolved"] == 4
+    assert dup["unresolved"] == dup["open_only"] + dup["investigating"]
     assert set(dup["affected_customers"]) == {"Sundaram Agro Distributors", "Greenfield Seeds Co-op"}
     assert 1 <= len(dup["examples"]) <= 3
 
 
+def test_recurring_issues_default_excludes_resolved(client, db_path):
+    result = call(client, "recurring_issues", group_by="category", min_count=1)
+    assert result["status_filter"] == "unresolved"
+    assert "resolved issues are excluded" in result["note"]
+    assert "open or investigating" in result["note"]
+    for group in result["groups"]:
+        assert group["resolved"] == 0
+        assert group["issue_count"] == group["unresolved"]
+        assert all(e["status"] in ("open", "investigating") for e in group["examples"])
+
+    conn = connect(db_path)
+    expected = conn.execute("SELECT COUNT(*) FROM issues WHERE status IN ('open', 'investigating')").fetchone()[0]
+    conn.close()
+    assert sum(g["issue_count"] for g in result["groups"]) == expected
+    assert "resolved issues are excluded" not in call(client, "recurring_issues", status="all")["note"]
+
+
 def test_recurring_issues_other_groupings(client):
-    by_product = {g["group"]: g for g in call(client, "recurring_issues", group_by="product")["groups"]}
+    by_product = {g["group"]: g for g in
+                  call(client, "recurring_issues", group_by="product", status="all")["groups"]}
     assert by_product["SD-TOM-AR01"]["categories"] == ["wrong_item"]
     assert by_product["SD-TOM-AR01"]["issue_count"] == 3
-    by_network = {g["group"]: g for g in call(client, "recurring_issues", group_by="client_network")["groups"]}
+    by_network = {g["group"]: g for g in
+                  call(client, "recurring_issues", group_by="client_network", status="all")["groups"]}
     assert by_network["offline_sync"]["categories"] == ["duplicate_order"]
     by_jira = {g["group"]: g["issue_count"] for g in
-               call(client, "recurring_issues", group_by="jira_key", min_count=1)["groups"]}
+               call(client, "recurring_issues", group_by="jira_key", min_count=1, status="all")["groups"]}
     assert by_jira == {"SCRUM-24": 1, "SCRUM-25": 1}
     assert "group_by" in call_error(client, "recurring_issues", group_by="description; DROP TABLE issues")
 
 
 def test_list_issues_by_jira_key(client):
-    result = call(client, "list_issues", jira_key="SCRUM-25")
+    result = call(client, "list_issues", jira_key="SCRUM-25", status="all")
     assert result["total"] == 1
     issue = result["issues"][0]
     assert issue["customer"] == "Sundaram Agro Distributors"
     assert issue["category"] == "duplicate_order" and issue["jira_key"] == "SCRUM-25"
     assert issue["client_network"] == "offline_sync" and issue["products"]
+    # SCRUM-25 is resolved, so the default (unresolved) leaves it out.
+    assert call(client, "list_issues", jira_key="SCRUM-25")["total"] == 0
 
 
 def test_list_issues_filters(client):
-    assert call(client, "list_issues", product_sku="SD-TOM-AR01", category="wrong_item")["total"] == 3
-    assert call(client, "list_issues", customer="GRN-002", category="delay")["total"] == 3
+    assert call(client, "list_issues", product_sku="SD-TOM-AR01", category="wrong_item", status="all")["total"] == 3
+    assert call(client, "list_issues", customer="GRN-002", category="delay", status="all")["total"] == 3
     open_ones = call(client, "list_issues", status="open")
     assert all(i["status"] == "open" for i in open_ones["issues"]) and open_ones["total"] > 0
+    assert call(client, "list_issues", status="all", limit=100)["total"] == 12
+
+
+def test_unresolved_matches_customer_summary(client):
+    for customer in call(client, "list_customers")["customers"]:
+        summary = customer["summary"]
+        code = customer["customer_code"]
+        unresolved = call(client, "list_issues", customer=code, status="unresolved", limit=100)
+        assert unresolved["total"] == unresolved["returned"] == summary["unresolved_issues"], code
+        assert all(i["status"] in ("open", "investigating") for i in unresolved["issues"])
+        assert call(client, "list_issues", customer=code, status="open")["total"] == summary["open_issues_only"]
+        assert call(client, "list_issues", customer=code, status="investigating")["total"] == \
+            summary["investigating_issues"]
+        assert call(client, "list_issues", customer=code, status="all")["total"] == summary["total_issues"]
+
+
+def test_open_is_a_subset_of_unresolved(client):
+    open_only = call(client, "list_issues", status="open", limit=100)
+    unresolved = call(client, "list_issues", status="unresolved", limit=100)
+    assert 0 < open_only["total"] < unresolved["total"]
+    assert {i["issue_id"] for i in open_only["issues"]} < {i["issue_id"] for i in unresolved["issues"]}
+
+
+def test_list_issues_defaults_to_unresolved(client):
+    default = call(client, "list_issues", limit=100)
+    unresolved = call(client, "list_issues", status="unresolved", limit=100)
+    assert default["status_filter"] == "unresolved"
+    assert [i["issue_id"] for i in default["issues"]] == [i["issue_id"] for i in unresolved["issues"]]
+    assert default["total"] == unresolved["total"]
+
+
+def test_status_meaning_is_documented(client):
+    tools = {t["name"]: t for t in rpc(client, "tools/list").json()["result"]["tools"]}
+    for name in ("list_issues", "recurring_issues"):
+        description = tools[name]["description"]
+        assert "unresolved means status is open or investigating" in description
+        assert "open means newly reported and not yet being worked on" in description
+        assert tools[name]["inputSchema"]["properties"]["status"]["default"] == "unresolved"
+    schema = call(client, "get_data_schema")
+    assert "unresolved" in schema["allowed_values"]["issue_status_filter"]
+    assert "unresolved_issues" in schema["tables"]["customer_summary (view)"]
+    assert "open_issues," not in schema["tables"]["customer_summary (view)"]
+
+
+def test_existing_database_gets_updated_view(db_path, monkeypatch):
+    """An old data.db with the previous customer_summary picks up the new view on startup."""
+    conn = connect(db_path)
+    conn.executescript(
+        "DROP VIEW customer_summary; "
+        "CREATE VIEW customer_summary AS SELECT c.id AS customer_id, c.name, 0 AS open_issues FROM customers c;")
+    conn.close()
+    with TestClient(app):
+        pass
+    conn = connect(db_path)
+    columns = [r[1] for r in conn.execute("PRAGMA table_info(customer_summary)")]
+    conn.close()
+    assert "open_issues" not in columns
+    assert {"unresolved_issues", "open_issues_only", "investigating_issues"} <= set(columns)
 
 
 def test_customer_timeline(client):
@@ -225,7 +306,7 @@ def test_search_and_get_order(client):
     tomato = call(client, "search_orders", product="SD-TOM-AR01")
     assert tomato["total"] >= 3
 
-    order_id = call(client, "list_issues", jira_key="SCRUM-24")["issues"][0]["order_id"]
+    order_id = call(client, "list_issues", jira_key="SCRUM-24", status="all")["issues"][0]["order_id"]
     order = call(client, "get_order", order_id=order_id)
     assert order["order_id"] == order_id and order["client_network"] == "offline_sync"
     assert order["status_history"][0]["to_status"] == "placed"
@@ -241,10 +322,15 @@ def test_customers_and_profile(client):
     sun = next(c for c in customers["customers"] if c["customer_code"] == "SUN-001")
     assert sun["status"] == "at_risk" and sun["summary"]["order_count"] == 14
     assert sun["account_owner"] == "Rohan Kulkarni"
+    summary = sun["summary"]
+    assert "open_issues" not in summary
+    assert summary["unresolved_issues"] == summary["open_issues_only"] + summary["investigating_issues"]
+    assert summary["total_issues"] >= summary["unresolved_issues"]
     assert call(client, "list_customers", tier="mid_market")["customers"][0]["customer_code"] == "GRN-002"
 
     profile = call(client, "get_customer_profile", name="GRN-002")
     assert profile["name"] == "Greenfield Seeds Co-op"
+    assert {"unresolved_issues", "open_issues_only", "investigating_issues", "total_issues"} <= set(profile["summary"])
     assert sum(c["is_primary"] for c in profile["contacts"]) == 1
     assert sum(a["is_default"] for a in profile["addresses"]) == 1
     assert all(set(c) == {"full_name", "title", "is_primary"} for c in profile["contacts"])
@@ -290,8 +376,8 @@ ALL_CALLS = [
     ("list_customers", {}),
     ("get_customer_profile", {"name": "SUN-001"}),
     ("get_customer_timeline", {"name": "Greenfield", "limit": 100}),
-    ("list_issues", {"limit": 100}),
-    ("recurring_issues", {"group_by": "customer", "min_count": 1}),
+    ("list_issues", {"status": "all", "limit": 100}),
+    ("recurring_issues", {"group_by": "customer", "min_count": 1, "status": "all"}),
     ("list_feedback", {"limit": 100}),
     ("list_reviews", {"limit": 100}),
     ("list_messages", {"limit": 100}),
@@ -332,7 +418,7 @@ def test_limit_is_capped(client, db_path):
     page2 = call(client, "list_messages", order_id=order_id, limit=1000, offset=100)
     assert page2["offset"] == 100 and page2["returned"] == result["total"] - 100 and page2["truncated"] is False
 
-    issues = call(client, "list_issues", limit=1000)
+    issues = call(client, "list_issues", status="all", limit=1000)
     assert issues["returned"] == issues["total"] == 12 and issues["truncated"] is False
     assert call(client, "search_orders", limit=5)["truncated"] is True
     assert call(client, "search_orders")["returned"] == 25  # default limit
@@ -362,6 +448,9 @@ def test_percent_matches_only_literal_percent(client, db_path):
 
 
 def test_bad_inputs_are_tool_errors(client):
+    for tool in ("list_issues", "recurring_issues"):
+        message = call_error(client, tool, status="closed")
+        assert "unresolved" in message and "investigating" in message, message
     assert "Invalid date" in call_error(client, "search_orders", from_date="last tuesday")
     assert call_error(client, "search_orders", status="bogus")
     assert call_error(client, "list_feedback", max_rating=9)
