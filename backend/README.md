@@ -37,7 +37,16 @@ The database file is `backend/data.db`. Set `ORDERWAVE_DB_PATH` to use a differe
 python seed.py
 ```
 
-This creates the tables from `schema.sql` if needed, then adds 2 customers, 3 users, 20 products, 25 orders with status history, order messages and issues. It is safe to run again: if data already exists it does nothing. To start over, delete `data.db` and run it again.
+This creates the tables from `schema.sql` if needed, then adds 2 customers, 3 users, 20 products, 25 orders with status history, 14 order messages, 12 issues and 13 feedback ratings. It is safe to run again: if data already exists it does nothing.
+
+There are no migrations. When `schema.sql` changes, delete `data.db` and run the seed again.
+
+The demo data has patterns worth finding:
+
+- Duplicate orders: checkout on a weak mobile signal hangs, the customer retries, and the order goes through twice. This happens 3 times at Sundaram Agro and once at Greenfield Seeds, and two of the issues are linked to Jira (SCRUM-24, SCRUM-25).
+- Wrong items: all 3 `wrong_item` issues are tomato seed SD-TOM-AR01 arriving as okra seed.
+- Delays: all 3 `delay` issues are Greenfield orders in Pune.
+- Feedback: the low ratings match the orders that have issues.
 
 ## Run the server
 

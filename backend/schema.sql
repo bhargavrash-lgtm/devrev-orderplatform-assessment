@@ -65,8 +65,7 @@ CREATE TABLE IF NOT EXISTS issues (
   severity TEXT NOT NULL DEFAULT 'medium' CHECK (severity IN ('low','medium','high')),
   status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','investigating','resolved')),
   description TEXT NOT NULL,
-  ai_category TEXT,
-  ai_severity TEXT,
+  jira_key TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -90,11 +89,12 @@ CREATE TABLE IF NOT EXISTS attachments (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
-CREATE TABLE IF NOT EXISTS ai_requests (
+CREATE TABLE IF NOT EXISTS order_feedback (
   id INTEGER PRIMARY KEY,
-  order_id INTEGER NOT NULL REFERENCES orders(id),
+  order_id INTEGER NOT NULL UNIQUE REFERENCES orders(id) ON DELETE CASCADE,
   user_id INTEGER NOT NULL REFERENCES users(id),
-  action TEXT NOT NULL,
+  rating INTEGER NOT NULL CHECK (rating BETWEEN 1 AND 5),
+  comment TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 

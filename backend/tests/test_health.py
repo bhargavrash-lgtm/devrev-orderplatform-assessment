@@ -18,4 +18,5 @@ def test_health_creates_db_and_returns_ok(tmp_path, monkeypatch):
     tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
     conn.close()
     assert {"customers", "users", "products", "orders", "order_items", "order_events",
-            "issues", "order_messages", "attachments", "ai_requests"} <= tables
+            "issues", "order_messages", "attachments", "order_feedback"} <= tables
+    assert "ai_requests" not in tables

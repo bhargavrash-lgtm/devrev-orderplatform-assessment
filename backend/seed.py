@@ -3,6 +3,13 @@
 Usage: python seed.py   (needs SEED_OPS_PASSWORD and SEED_CUSTOMER_PASSWORD set)
 
 Idempotent: if any customers already exist, nothing is written.
+
+The data has deliberate patterns for analysis:
+- Duplicate orders: Sundaram Agro places orders from a field office with a weak mobile
+  signal; checkout hangs, they retry, and the order goes through twice (3 times at
+  Sundaram, once at Greenfield).
+- Wrong items: SD-TOM-AR01 (Arka Rakshak tomato seed) is repeatedly picked as okra seed.
+- Delays: dispatches to Greenfield in Pune run late.
 """
 
 import os
@@ -66,108 +73,151 @@ STATUS_FLOW = ["placed", "confirmed", "packed", "shipped", "delivered"]
 STEP_HOURS = {"confirmed": (2, 8), "packed": (18, 30), "shipped": (20, 40), "delivered": (48, 96), "cancelled": (2, 24)}
 
 
-def _order(key, customer, days, hours, status, items=None, note=None, cancelled_after=None):
+def _order(key, customer, days, minutes, status, items=None, note=None, cancelled_after=None, slow=None):
+    """slow overrides STEP_HOURS for this order, e.g. {"shipped": (100, 110)}."""
     return {
-        "key": key, "customer": customer, "ago": timedelta(days=days, hours=hours),
-        "status": status, "items": items, "note": note, "cancelled_after": cancelled_after,
+        "key": key, "customer": customer, "ago": timedelta(days=days) - timedelta(minutes=minutes),
+        "status": status, "items": items, "note": note, "cancelled_after": cancelled_after, "slow": slow or {},
     }
 
 
-# Orders oldest first. items=None means pick 1-4 random products.
+# Repeated item lists for the duplicate pairs (the second order is the retry).
+DUP_A = [("FT-UREA-45", 60), ("FT-DAP-50", 30)]
+DUP_B = [("SD-PDY-1121", 20), ("FT-ZN-5", 12), ("CP-MNZ-1", 15)]
+DUP_C = [("SD-CTN-BG2", 40), ("CP-IMD-250", 20)]
+DUP_D = [("FT-UREA-45", 50), ("FT-NPK-191919", 40), ("EQ-SPR-16", 3)]
+
+# Orders oldest first. days = days ago; minutes = minutes later than that (for retries).
+# items=None means pick 1-4 random products.
 ORDERS = [
-    _order("s01", "sundaram", 58, 3, "delivered"),
-    _order("g01", "greenfield", 55, 5, "delivered"),
-    _order("s02", "sundaram", 51, 2, "delivered", items=[("FT-DAP-50", 40), ("FT-UREA-45", 60)]),
-    _order("g02", "greenfield", 47, 6, "delivered"),
-    _order("s03", "sundaram", 44, 4, "cancelled", cancelled_after="placed"),
-    _order("g03", "greenfield", 40, 1, "delivered", items=[("SD-TOM-AR01", 30), ("CP-MNZ-1", 20)]),
-    _order("s04", "sundaram", 36, 7, "delivered", note="Unload at warehouse gate 2."),
-    _order("g04", "greenfield", 33, 2, "delivered"),
-    _order("s05", "sundaram", 29, 5, "delivered", items=[("CP-IMD-250", 24), ("CP-NEEM-1", 30)]),
-    _order("g05", "greenfield", 26, 3, "cancelled", items=[("FT-MOP-50", 30)], cancelled_after="confirmed"),
-    _order("s06", "sundaram", 23, 6, "delivered"),
-    _order("g06", "greenfield", 20, 4, "delivered", note="Call Ramesh (store keeper) before arrival."),
-    _order("s07", "sundaram", 17, 1, "delivered"),
-    _order("g07", "greenfield", 14, 16, "shipped", items=[("EQ-DRP-KIT", 2), ("EQ-BSP-16", 4)],
+    _order("s01", "sundaram", 59, 0, "delivered"),
+    _order("g01", "greenfield", 56, 0, "delivered", items=[("SD-TOM-AR01", 40), ("FT-NPK-191919", 25)]),
+    _order("s02", "sundaram", 53, 0, "delivered", items=DUP_A, note="Deliver to the Hosakote field office."),
+    _order("s03", "sundaram", 53, 12, "delivered", items=DUP_A, note="Deliver to the Hosakote field office."),
+    _order("g02", "greenfield", 49, 0, "delivered"),
+    _order("s04", "sundaram", 46, 0, "delivered", items=[("FT-DAP-50", 40), ("FT-UREA-45", 30)]),
+    _order("g03", "greenfield", 42, 0, "delivered", items=[("EQ-BSP-16", 5), ("CP-NEEM-1", 20)],
+           slow={"shipped": (100, 110)}),
+    _order("s05", "sundaram", 39, 0, "delivered", items=[("SD-TOM-AR01", 25), ("CP-MNZ-1", 10)]),
+    _order("g04", "greenfield", 35, 0, "delivered"),
+    _order("s06", "sundaram", 32, 0, "delivered", items=[("CP-IMD-250", 24), ("CP-NEEM-1", 30)]),
+    _order("s07", "sundaram", 28, 0, "delivered", items=DUP_B, note="Deliver to the Hosakote field office."),
+    _order("s08", "sundaram", 28, 9, "cancelled", items=DUP_B, cancelled_after="confirmed",
+           note="Deliver to the Hosakote field office."),
+    _order("g05", "greenfield", 25, 0, "delivered", items=[("SD-TOM-AR01", 30), ("CP-NEEM-1", 15)]),
+    _order("g06", "greenfield", 22, 0, "delivered", note="Call Ramesh (store keeper) before arrival."),
+    _order("s09", "sundaram", 19, 0, "delivered"),
+    _order("g07", "greenfield", 16, 0, "delivered", items=DUP_C, note="Deliver to the Shirur farm office."),
+    _order("g08", "greenfield", 16, 15, "cancelled", items=DUP_C, cancelled_after="confirmed",
+           note="Deliver to the Shirur farm office."),
+    _order("s10", "sundaram", 13, 0, "delivered", note="Unload at warehouse gate 2."),
+    _order("g09", "greenfield", 12, 0, "shipped", items=[("EQ-DRP-KIT", 2), ("FT-NPK-191919", 30)],
            note="Needed before sowing. Deliver to the Shirur farm office."),
-    _order("s08", "sundaram", 12, 5, "delivered"),
-    _order("g08", "greenfield", 10, 3, "delivered"),
-    _order("s09", "sundaram", 8, 15, "shipped"),
-    _order("g09", "greenfield", 7, 2, "shipped"),
-    _order("s10", "sundaram", 5, 4, "packed"),
-    _order("g10", "greenfield", 4, 14, "packed", items=[("EQ-TARP-12", 12), ("EQ-SPR-16", 6)],
-           note="Deliver to Hadapsar godown, Pune 411001."),
-    _order("s11", "sundaram", 3, 2, "confirmed", items=[("SD-PDY-1121", 25), ("FT-UREA-45", 50), ("FT-ZN-5", 10)]),
-    # Same items placed 20 minutes after s11: the duplicate order.
-    _order("s12", "sundaram", 3, 1 + 40 / 60, "confirmed",
-           items=[("SD-PDY-1121", 25), ("FT-UREA-45", 50), ("FT-ZN-5", 10)]),
-    _order("g11", "greenfield", 2, 6, "confirmed"),
-    _order("s13", "sundaram", 1, 9, "placed"),
-    _order("g12", "greenfield", 0, 5, "placed"),
+    _order("s11", "sundaram", 10, 0, "delivered"),
+    _order("g10", "greenfield", 8, 0, "packed", items=[("EQ-TARP-12", 12), ("EQ-SPR-16", 6)]),
+    _order("s12", "sundaram", 5, 0, "shipped"),
+    _order("s13", "sundaram", 3, 0, "confirmed", items=DUP_D, note="Deliver to the Hosakote field office."),
+    _order("s14", "sundaram", 3, 7, "confirmed", items=DUP_D, note="Deliver to the Hosakote field office."),
+    _order("g11", "greenfield", 1, 0, "placed"),
 ]
 
 # Order key -> [(hours after the order was placed, body)]. Authors alternate customer, ops, customer, ...
 MESSAGES = {
-    "s02": [
-        (180, "Three of the DAP bags arrived torn and some fertiliser spilled in the truck. Raising an issue with photos."),
-        (183, "Sorry about that. We've logged it and asked the transporter for their report. How many bags are affected?"),
-        (185, "Three out of forty. The urea bags are all fine."),
-        (200, "Thanks for confirming. Three DAP bags will be credited on your next invoice."),
+    "g09": [
+        (150, "Where is this shipment? It was marked shipped almost a week ago and nobody at the transporter "
+              "picks up the phone. We have labour booked to lay the drip lines on Saturday."),
+        (156, "I'm sorry, I know the timing is tight. I've escalated with the transporter's Pune depot and "
+              "will call you before 5 pm with a location for the truck."),
+        (260, "Still nothing, and no call yesterday either. If the kits don't come by Friday we'll have to "
+              "cancel and buy locally."),
     ],
-    "g03": [
-        (180, "We received Okra hybrid seed packets instead of Tomato Arka Rakshak."),
-        (184, "Apologies, that was a picking error. Replacement tomato seed goes out today. Please keep the okra packets for pickup."),
-        (186, "OK, we'll hold them at the counter."),
+    "s14": [
+        (1, "Hi, this is a repeat of the order I placed a few minutes ago. The signal at the field office "
+            "dropped while it was submitting. Please cancel this one."),
+        (4, "Got it, thanks for telling us quickly. I'll cancel this one before it goes to packing and "
+            "keep the earlier order."),
     ],
-    "g05": [
-        (1, "Please confirm all 30 bags of MOP can be dispatched this week."),
-        (40, "Sorry, our MOP allocation from the supplier fell through, so we've had to cancel this order. No payment was taken."),
-        (42, "Understood. Please let us know when MOP is back in stock."),
-        (44, "Will do. We expect fresh stock in about two weeks."),
+    "g01": [
+        (180, "Opened the tomato seed cartons today and every packet inside is okra. The outer box says Arka "
+              "Rakshak. Our nursery beds are ready and now we're stuck."),
+        (185, "That's a picking mistake on our side, I'm sorry. Correct packets will go out on today's "
+              "evening dispatch, and the driver will collect the okra."),
     ],
-    "g07": [
-        (150, "The shipment hasn't reached us and tracking hasn't updated in four days."),
-        (153, "Checking with the transporter now and will update you today."),
-        (250, "Still nothing. Sowing starts next week and we need the drip kits urgently."),
-        (252, "The truck was held at a checkpost near Satara. We expect delivery within 48 hours."),
+    "s04": [
+        (178, "Four DAP bags came split along the seam. The driver says they were loaded under the urea."),
+        (184, "Thanks for the photos. We'll credit the four bags and have raised it with the loading team."),
     ],
-    "s09": [
-        (90, "Can you share the vehicle number and expected arrival time?"),
-        (92, "Vehicle KA-01-AB-4521, expected tomorrow before 6 pm."),
-    ],
-    "s12": [
-        (3, "We placed this order twice by mistake. It's the same as the order we placed 20 minutes earlier."),
-        (20, "Thanks for flagging it. We'll hold both while we check and then cancel the duplicate."),
-        (22, "Thank you. Please keep the first one."),
+    "s10": [
+        (200, "Just wanted to say the delivery came a day earlier than promised and the driver helped unload. Thank you!"),
+        (202, "That's great to hear, I'll pass it on to the dispatch team."),
     ],
     "g10": [
-        (2, "Please deliver this to our new godown at Hadapsar."),
-        (26, "The pin code on the order (411001) doesn't match Hadapsar (411028). Can you confirm the address?"),
-        (30, "The correct pin is 411028. Sorry for the confusion."),
+        (120, "Hello, this order shows as packed since last week. Do you have a dispatch date?"),
+        (124, "Checking with the warehouse now. The tarpaulins came in late from our supplier, so the whole "
+              "order is waiting on them. I'll confirm a date tomorrow."),
     ],
-    "s13": [
-        (1, "Can we add 10 more bags of urea to this order?"),
-        (3, "Placed orders can't be edited. Please place a separate order and we'll ship them together."),
+    "s12": [
+        (90, "Could you share the vehicle number and an expected arrival time? We need someone at the gate."),
     ],
 }
 
-# (order key, reporter key, category, severity, status, hours after placed, description).
-# Descriptions can use {s11} to refer to that order's id.
+# (order key, reporter key, category, severity, status, hours after placed, jira key, description).
+# Descriptions can use {s02} etc. to refer to that order's id.
 ISSUES = [
-    ("s12", "sundaram", "duplicate_order", "high", "open", 2,
-     "Duplicate of order #{s11}. Our purchase team submitted the same paddy seed, urea and zinc order twice "
-     "within 20 minutes. Please cancel this one and keep #{s11}."),
-    ("g07", "greenfield", "delay", "high", "investigating", 240,
-     "Drip kits and battery sprayers were marked shipped but still haven't arrived after more than a week. "
-     "We need them before sowing starts."),
-    ("s02", "sundaram", "damaged", "medium", "resolved", 181,
-     "3 of 40 DAP bags arrived torn with fertiliser spilled in the truck."),
-    ("g03", "greenfield", "wrong_item", "medium", "resolved", 181,
-     "Received 30 packets of Okra hybrid seed instead of Tomato Hybrid Seed Arka Rakshak."),
-    ("s05", "sundaram", "billing", "low", "investigating", 200,
-     "Invoice charges Imidacloprid 17.8% SL at ₹450 per bottle but the order price was ₹410."),
-    ("g10", "ops", "other", "low", "open", 27,
-     "Delivery pin code 411001 doesn't match the Hadapsar godown address (411028). Holding dispatch until confirmed."),
+    ("s03", "sundaram", "duplicate_order", "high", "resolved", 3, "SCRUM-24",
+     "Order #{s03} is a duplicate of #{s02}. I was placing it from our Hosakote field office where the signal "
+     "keeps dropping. The page spun for a long time after I tapped Place order, so I tapped it again. Now both "
+     "have been confirmed and we only need one lot of urea and DAP."),
+    ("s08", "sundaram", "duplicate_order", "high", "resolved", 2, "SCRUM-25",
+     "Same problem as last month. The network at the field office cut out halfway through checkout and the app "
+     "showed an error, so I placed the order again. It went through twice. Please cancel #{s08} and keep #{s07}."),
+    ("g08", "greenfield", "duplicate_order", "medium", "resolved", 1, None,
+     "We were on mobile data at the Shirur farm and the order screen timed out. I tried again and it looks like "
+     "both went through. Keep #{g07} and cancel #{g08}."),
+    ("s14", "sundaram", "duplicate_order", "high", "open", 1, None,
+     "Third time this has happened. Ordered from the field office, the connection dropped, I got a 'something "
+     "went wrong' message, retried, and now there are two identical orders (#{s13} and #{s14}). Please cancel "
+     "#{s14} before it is packed. Could the site warn us when the same order is placed twice?"),
+    ("g01", "greenfield", "wrong_item", "medium", "resolved", 182, None,
+     "Ordered 40 packets of Tomato Hybrid Seed Arka Rakshak (SD-TOM-AR01). Every packet in the cartons is okra "
+     "hybrid seed. The cartons are labelled tomato but the packets inside are okra."),
+    ("s05", "sundaram", "wrong_item", "high", "resolved", 178, None,
+     "Our 25 packets of Arka Rakshak tomato seed (SD-TOM-AR01) turned out to be okra seed. Farmers have nursery "
+     "sowing booked this week, so we need the right seed urgently."),
+    ("g05", "greenfield", "wrong_item", "medium", "investigating", 180, None,
+     "Wrong seed again for SD-TOM-AR01. 30 packets of tomato ordered and 12 of them are okra. This is the second "
+     "time for us. Please check how this item is being picked."),
+    ("g03", "greenfield", "delay", "medium", "resolved", 100, None,
+     "The battery sprayers still haven't shipped four days after the order was confirmed. We need them for the "
+     "spraying round on Monday."),
+    ("g09", "greenfield", "delay", "high", "investigating", 200, None,
+     "Drip irrigation kits were marked shipped over a week ago and have not arrived. The transporter's number "
+     "goes unanswered and our labour is booked for Saturday."),
+    ("g10", "greenfield", "delay", "medium", "open", 150, None,
+     "Order has been sitting at packed for six days with no dispatch date. Is something holding it up?"),
+    ("s04", "sundaram", "damaged", "medium", "resolved", 178, None,
+     "4 of the 40 DAP bags arrived split along the seam and roughly 15 kg spilled in the truck. The driver said "
+     "they were loaded underneath the urea."),
+    ("s06", "sundaram", "billing", "low", "investigating", 200, None,
+     "The invoice lists Imidacloprid 17.8% SL at ₹450 per bottle, but the order and the catalogue both say ₹410. "
+     "For 24 bottles that's ₹960 extra."),
+]
+
+# (order key, rating, comment). Only delivered orders; the customer's user leaves the feedback.
+FEEDBACK = [
+    ("g01", 1, "Tomato cartons were full of okra seed. We lost a week of nursery time."),
+    ("s04", 2, "Four DAP bags torn on arrival. The loading needs to be done more carefully."),
+    ("s05", 1, "Okra seed instead of tomato. Very disappointing, our farmers were waiting."),
+    ("g05", 2, "Part of the tomato seed was okra again. Second time for us."),
+    ("s02", 3, "Products were fine, but the order went through twice and it took a week to sort out."),
+    ("g03", 3, "Sprayers work well, but they shipped four days late."),
+    ("s06", 3, "Goods OK. Still waiting on the corrected invoice."),
+    ("s01", 5, "Everything arrived on time and well packed."),
+    ("g02", 4, "Good quality. Delivery was a day later than quoted but they kept us informed."),
+    ("g04", 5, "Smooth order, the driver called ahead."),
+    ("g06", 4, "All good. SMS tracking updates would be nice."),
+    ("s09", 5, "Quick delivery and the bags were in perfect condition."),
+    ("s10", 5, "Arrived a day early and the driver helped unload. Thanks to the dispatch team."),
 ]
 
 
@@ -210,10 +260,9 @@ def seed(conn, ops_password: str, customer_password: str, now: datetime | None =
     with conn:
         customer_ids = {}
         for key, (name, city, email) in CUSTOMERS.items():
-            created = _ts(now - timedelta(days=90))
             cur = conn.execute(
                 "INSERT INTO customers (name, city, contact_email, created_at) VALUES (?, ?, ?, ?)",
-                (name, city, email, created),
+                (name, city, email, _ts(now - timedelta(days=90))),
             )
             customer_ids[key] = cur.lastrowid
 
@@ -237,7 +286,7 @@ def seed(conn, ops_password: str, customer_password: str, now: datetime | None =
             )
             products[sku] = (cur.lastrowid, price, category)
 
-        order_ids, placed_at = {}, {}
+        order_ids, placed_at, delivered_at = {}, {}, {}
         for order in ORDERS:
             customer_user = user_ids[order["customer"]]
             placed = now - order["ago"]
@@ -250,7 +299,7 @@ def seed(conn, ops_password: str, customer_password: str, now: datetime | None =
 
             events, t, prev = [(None, "placed", customer_user, placed)], placed, "placed"
             for status in _status_path(order)[1:]:
-                low, high = STEP_HOURS[status]
+                low, high = order["slow"].get(status, STEP_HOURS[status])
                 t += timedelta(hours=rng.randint(low, high), minutes=rng.randint(0, 59))
                 customer_cancelled = status == "cancelled" and order["cancelled_after"] == "placed"
                 events.append((prev, status, customer_user if customer_cancelled else user_ids["ops"], t))
@@ -266,6 +315,8 @@ def seed(conn, ops_password: str, customer_password: str, now: datetime | None =
             )
             order_id = cur.lastrowid
             order_ids[order["key"]], placed_at[order["key"]] = order_id, placed
+            if order["status"] == "delivered":
+                delivered_at[order["key"]] = t
 
             conn.executemany(
                 "INSERT INTO order_items (order_id, product_id, quantity, unit_price) VALUES (?, ?, ?, ?)",
@@ -293,12 +344,21 @@ def seed(conn, ops_password: str, customer_password: str, now: datetime | None =
                  for i, (hours, body) in enumerate(thread)],
             )
 
-        for order_key, reporter, category, severity, status, hours, description in ISSUES:
+        for order_key, reporter, category, severity, status, hours, jira_key, description in ISSUES:
             conn.execute(
-                "INSERT INTO issues (order_id, reported_by, category, severity, status, description, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO issues (order_id, reported_by, category, severity, status, description, jira_key, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (order_ids[order_key], user_ids[reporter], category, severity, status,
-                 description.format(**order_ids), after_placed(order_key, hours)),
+                 description.format(**order_ids), jira_key, after_placed(order_key, hours)),
+            )
+
+        for order_key, rating, comment in FEEDBACK:
+            if order_key not in delivered_at:
+                raise RuntimeError(f"order {order_key}: feedback is only for delivered orders")
+            left_at = min(delivered_at[order_key] + timedelta(hours=rng.randint(4, 48)), now)
+            conn.execute(
+                "INSERT INTO order_feedback (order_id, user_id, rating, comment, created_at) VALUES (?, ?, ?, ?, ?)",
+                (order_ids[order_key], user_ids[customer_of[order_key]], rating, comment, _ts(left_at)),
             )
 
     return True
