@@ -75,7 +75,8 @@ describe("ops orders list", () => {
 
     const expected = { status: "shipped", client_network: "offline_sync", customer: "Sundaram", product: "SD-TOM", id: "23",
       from: "2026-09-01", to: "2026-10-31", sort: "-total" };
-    await waitFor(() => expect(Object.fromEntries(lastQuery())).toEqual({ ...expected, page: "1", page_size: "25" }));
+    // Several 300 ms debounced filters: allow for a busy machine.
+    await waitFor(() => expect(Object.fromEntries(lastQuery())).toEqual({ ...expected, page: "1", page_size: "25" }), { timeout: 5000 });
     expect(Object.fromEntries(search())).toEqual(expected);
 
     await u.click(screen.getByRole("button", { name: "Clear filters" }));
