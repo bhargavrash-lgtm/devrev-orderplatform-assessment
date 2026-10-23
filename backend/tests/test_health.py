@@ -16,7 +16,10 @@ def test_health_creates_db_and_returns_ok(tmp_path, monkeypatch):
 
     conn = connect(path)
     tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    views = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'view'")}
     conn.close()
+    assert views == {"customer_summary", "customer_timeline"}
     assert {"customers", "users", "products", "orders", "order_items", "order_events",
-            "issues", "order_messages", "attachments", "order_feedback"} <= tables
+            "issues", "order_messages", "attachments", "order_feedback", "customer_contacts",
+            "customer_addresses", "customer_interactions", "product_reviews"} <= tables
     assert "ai_requests" not in tables

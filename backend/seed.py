@@ -5,11 +5,13 @@ Usage: python seed.py   (needs SEED_OPS_PASSWORD and SEED_CUSTOMER_PASSWORD set)
 Idempotent: if any customers already exist, nothing is written.
 
 The data has deliberate patterns for analysis:
-- Duplicate orders: Sundaram Agro places orders from a field office with a weak mobile
-  signal; checkout hangs, they retry, and the order goes through twice (3 times at
-  Sundaram, once at Greenfield).
+- Duplicate orders: orders placed from the rural sites (Hosakote field office, Shirur farm)
+  are queued offline and synced later; the customer retries meanwhile and the order goes
+  through twice (3 times at Sundaram, once at Greenfield). orders.client_network records it.
 - Wrong items: SD-TOM-AR01 (Arka Rakshak tomato seed) is repeatedly picked as okra seed.
 - Delays: dispatches to Greenfield in Pune run late.
+- Account health: Sundaram's interactions turn negative after the duplicates and end in a
+  negative renewal conversation (status at_risk); Greenfield stays mostly positive.
 """
 
 import os
@@ -23,17 +25,57 @@ from db import connect, db_path, init_db
 
 TS_FORMAT = "%Y-%m-%d %H:%M:%S"  # same format as SQLite datetime('now'), UTC
 
+# customer_since_days: how long ago the customer signed up. owner: user key of the account owner.
 CUSTOMERS = {
-    "sundaram": ("Sundaram Agro Distributors", "Bengaluru", "orders@sundaram-agro.example"),
-    "greenfield": ("Greenfield Seeds Co-op", "Pune", "purchase@greenfield-coop.example"),
+    "sundaram": {
+        "customer_code": "SUN-001", "name": "Sundaram Agro Distributors",
+        "industry": "Agricultural inputs distribution", "tier": "enterprise", "region": "South India",
+        "city": "Bengaluru", "state": "Karnataka", "annual_contract_value": 4200000,
+        "renewal_date": "2027-01-31", "status": "at_risk", "customer_since_days": 730,
+        "contact_email": "orders@sundaram-agro.example", "owner": "accounts",
+    },
+    "greenfield": {
+        "customer_code": "GRN-002", "name": "Greenfield Seeds Co-op",
+        "industry": "Farmer seed cooperative", "tier": "mid_market", "region": "West India",
+        "city": "Pune", "state": "Maharashtra", "annual_contract_value": 1150000,
+        "renewal_date": "2027-08-31", "status": "active", "customer_since_days": 425,
+        "contact_email": "purchase@greenfield-coop.example", "owner": "accounts",
+    },
 }
 
-# (key, email, full name, role, customer key)
+# (key, email, full name, role, customer key). Ops users share SEED_OPS_PASSWORD.
 USERS = [
     ("ops", "ops@orderwave.demo", "Meera Iyer", "ops", None),
+    ("accounts", "accounts@orderwave.demo", "Rohan Kulkarni", "ops", None),
     ("sundaram", "sundaram@orderwave.demo", "Karthik Sundaram", "customer", "sundaram"),
     ("greenfield", "greenfield@orderwave.demo", "Anjali Deshpande", "customer", "greenfield"),
 ]
+
+# customer key -> [(full name, title, email, phone, is_primary)]
+CONTACTS = {
+    "sundaram": [
+        ("Karthik Sundaram", "Head of Purchasing", "karthik@sundaram-agro.example", "+91 90000 11201", 1),
+        ("Lakshmi Narayan", "Finance Manager", "lakshmi@sundaram-agro.example", "+91 90000 11202", 0),
+        ("Venkatesh Rao", "Field Office Supervisor, Hosakote", "venkatesh@sundaram-agro.example", "+91 90000 11203", 0),
+    ],
+    "greenfield": [
+        ("Anjali Deshpande", "Procurement Lead", "anjali@greenfield-coop.example", "+91 90000 22301", 1),
+        ("Sachin More", "Farm Operations Manager, Shirur", "sachin@greenfield-coop.example", "+91 90000 22302", 0),
+    ],
+}
+
+# customer key -> {address key: (label, line1, city, state, pincode, is_default)}.
+# "main" is the default warehouse; "site" is the rural site with patchy connectivity.
+ADDRESSES = {
+    "sundaram": {
+        "main": ("Bengaluru warehouse", "Plot 14, KIADB Industrial Area, Dobbaspet", "Bengaluru", "Karnataka", "562111", 1),
+        "site": ("Hosakote field office", "Survey No. 112, Old Madras Road", "Hosakote", "Karnataka", "562114", 0),
+    },
+    "greenfield": {
+        "main": ("Pune godown", "Gat No. 45, Hadapsar Industrial Estate", "Pune", "Maharashtra", "411028", 1),
+        "site": ("Shirur farm office", "Ranjangaon MIDC Road", "Shirur", "Maharashtra", "412210", 0),
+    },
+}
 
 PLACEHOLDER_IMAGES = {
     "Seeds": "/static/products/seeds.svg",
@@ -73,11 +115,14 @@ STATUS_FLOW = ["placed", "confirmed", "packed", "shipped", "delivered"]
 STEP_HOURS = {"confirmed": (2, 8), "packed": (18, 30), "shipped": (20, 40), "delivered": (48, 96), "cancelled": (2, 24)}
 
 
-def _order(key, customer, days, minutes, status, items=None, note=None, cancelled_after=None, slow=None):
-    """slow overrides STEP_HOURS for this order, e.g. {"shipped": (100, 110)}."""
+def _order(key, customer, days, minutes, status, items=None, note=None, cancelled_after=None, slow=None,
+           address="main", network="good"):
+    """slow overrides STEP_HOURS for this order, e.g. {"shipped": (100, 110)}.
+    address is a key into ADDRESSES; network is the client_network value."""
     return {
         "key": key, "customer": customer, "ago": timedelta(days=days) - timedelta(minutes=minutes),
         "status": status, "items": items, "note": note, "cancelled_after": cancelled_after, "slow": slow or {},
+        "address": address, "network": network,
     }
 
 
@@ -87,37 +132,41 @@ DUP_B = [("SD-PDY-1121", 20), ("FT-ZN-5", 12), ("CP-MNZ-1", 15)]
 DUP_C = [("SD-CTN-BG2", 40), ("CP-IMD-250", 20)]
 DUP_D = [("FT-UREA-45", 50), ("FT-NPK-191919", 40), ("EQ-SPR-16", 3)]
 
+HOSAKOTE = "Deliver to the Hosakote field office."
+SHIRUR = "Deliver to the Shirur farm office."
+
 # Orders oldest first. days = days ago; minutes = minutes later than that (for retries).
-# items=None means pick 1-4 random products.
+# items=None means pick 1-4 random products. Duplicate pairs (and their originals) were
+# queued offline at a rural site; a few other site orders went through on a weak signal.
 ORDERS = [
     _order("s01", "sundaram", 59, 0, "delivered"),
     _order("g01", "greenfield", 56, 0, "delivered", items=[("SD-TOM-AR01", 40), ("FT-NPK-191919", 25)]),
-    _order("s02", "sundaram", 53, 0, "delivered", items=DUP_A, note="Deliver to the Hosakote field office."),
-    _order("s03", "sundaram", 53, 12, "delivered", items=DUP_A, note="Deliver to the Hosakote field office."),
+    _order("s02", "sundaram", 53, 0, "delivered", items=DUP_A, note=HOSAKOTE, address="site", network="offline_sync"),
+    _order("s03", "sundaram", 53, 12, "delivered", items=DUP_A, note=HOSAKOTE, address="site", network="offline_sync"),
     _order("g02", "greenfield", 49, 0, "delivered"),
     _order("s04", "sundaram", 46, 0, "delivered", items=[("FT-DAP-50", 40), ("FT-UREA-45", 30)]),
     _order("g03", "greenfield", 42, 0, "delivered", items=[("EQ-BSP-16", 5), ("CP-NEEM-1", 20)],
            slow={"shipped": (100, 110)}),
     _order("s05", "sundaram", 39, 0, "delivered", items=[("SD-TOM-AR01", 25), ("CP-MNZ-1", 10)]),
-    _order("g04", "greenfield", 35, 0, "delivered"),
+    _order("g04", "greenfield", 35, 0, "delivered", note=SHIRUR, address="site", network="weak"),
     _order("s06", "sundaram", 32, 0, "delivered", items=[("CP-IMD-250", 24), ("CP-NEEM-1", 30)]),
-    _order("s07", "sundaram", 28, 0, "delivered", items=DUP_B, note="Deliver to the Hosakote field office."),
+    _order("s07", "sundaram", 28, 0, "delivered", items=DUP_B, note=HOSAKOTE, address="site", network="offline_sync"),
     _order("s08", "sundaram", 28, 9, "cancelled", items=DUP_B, cancelled_after="confirmed",
-           note="Deliver to the Hosakote field office."),
+           note=HOSAKOTE, address="site", network="offline_sync"),
     _order("g05", "greenfield", 25, 0, "delivered", items=[("SD-TOM-AR01", 30), ("CP-NEEM-1", 15)]),
     _order("g06", "greenfield", 22, 0, "delivered", note="Call Ramesh (store keeper) before arrival."),
-    _order("s09", "sundaram", 19, 0, "delivered"),
-    _order("g07", "greenfield", 16, 0, "delivered", items=DUP_C, note="Deliver to the Shirur farm office."),
+    _order("s09", "sundaram", 19, 0, "delivered", note=HOSAKOTE, address="site", network="weak"),
+    _order("g07", "greenfield", 16, 0, "delivered", items=DUP_C, note=SHIRUR, address="site", network="offline_sync"),
     _order("g08", "greenfield", 16, 15, "cancelled", items=DUP_C, cancelled_after="confirmed",
-           note="Deliver to the Shirur farm office."),
+           note=SHIRUR, address="site", network="offline_sync"),
     _order("s10", "sundaram", 13, 0, "delivered", note="Unload at warehouse gate 2."),
     _order("g09", "greenfield", 12, 0, "shipped", items=[("EQ-DRP-KIT", 2), ("FT-NPK-191919", 30)],
-           note="Needed before sowing. Deliver to the Shirur farm office."),
+           note="Needed before sowing. " + SHIRUR, address="site", network="weak"),
     _order("s11", "sundaram", 10, 0, "delivered"),
     _order("g10", "greenfield", 8, 0, "packed", items=[("EQ-TARP-12", 12), ("EQ-SPR-16", 6)]),
-    _order("s12", "sundaram", 5, 0, "shipped"),
-    _order("s13", "sundaram", 3, 0, "confirmed", items=DUP_D, note="Deliver to the Hosakote field office."),
-    _order("s14", "sundaram", 3, 7, "confirmed", items=DUP_D, note="Deliver to the Hosakote field office."),
+    _order("s12", "sundaram", 5, 0, "shipped", note=HOSAKOTE, address="site", network="weak"),
+    _order("s13", "sundaram", 3, 0, "confirmed", items=DUP_D, note=HOSAKOTE, address="site", network="offline_sync"),
+    _order("s14", "sundaram", 3, 7, "confirmed", items=DUP_D, note=HOSAKOTE, address="site", network="offline_sync"),
     _order("g11", "greenfield", 1, 0, "placed"),
 ]
 
@@ -220,6 +269,87 @@ FEEDBACK = [
     ("s10", 5, "Arrived a day early and the driver helped unload. Thanks to the dispatch team."),
 ]
 
+# customer key -> [(days ago, type, sentiment, order key or None, author user key, summary)], oldest first.
+# Summaries can use {s03} etc. for order ids. Linked orders must be placed before the interaction.
+INTERACTIONS = {
+    "sundaram": [
+        (88, "meeting", "positive", None, "accounts",
+         "Quarterly review with Karthik at the Dobbaspet warehouse. Volumes are up about 18% on last year and "
+         "they want to move most of their kharif input buying onto the portal."),
+        (75, "call", "positive", None, "accounts",
+         "Walked Venkatesh through ordering from the Hosakote field office on his phone. He placed a test order "
+         "without help and liked that it works when the signal drops."),
+        (62, "email", "neutral", None, "accounts",
+         "Lakshmi asked for one consolidated invoice per month instead of one per order. Passed it to finance."),
+        (52, "call", "neutral", "s03", "ops",
+         "Karthik called about #{s03} going through twice from the field office. Agreed we'd take back the extra "
+         "urea and DAP. Logged SCRUM-24 for the offline retry problem."),
+        (37, "email", "neutral", "s04", "ops",
+         "Sent the credit note for the four torn DAP bags on #{s04}. Lakshmi confirmed she received it."),
+        (31, "call", "negative", "s05", "accounts",
+         "Karthik was upset about okra seed in the Arka Rakshak cartons on #{s05}. Two villages had nursery "
+         "sowing booked. Promised replacement seed on the evening dispatch."),
+        (27, "escalation", "negative", "s08", "accounts",
+         "Karthik escalated the second duplicate order (#{s08}) to our sales head. He said his field team no "
+         "longer trusts the app at Hosakote and has started phoning orders in again. Linked to SCRUM-25."),
+        (20, "email", "negative", "s06", "accounts",
+         "Lakshmi chased the Imidacloprid invoice correction on #{s06} for the second time. Finance still "
+         "hasn't issued the revised invoice."),
+        (12, "meeting", "negative", None, "accounts",
+         "Account review. Karthik is trialling a competing distributor portal for next season. Agreed to send "
+         "a written plan for fixing duplicate orders by the end of the month."),
+        (2, "renewal", "negative", "s14", "accounts",
+         "Renewal call ahead of the 31 Jan 2027 date. Karthik said they won't renew on current terms unless "
+         "duplicate orders stop. The third duplicate (#{s14}) came in this week. They want a 5% discount and a "
+         "named support contact."),
+    ],
+    "greenfield": [
+        (85, "meeting", "positive", None, "accounts",
+         "Onboarding session with Anjali. The co-op wants all seed and crop protection buying for its 600 member "
+         "farmers to go through the portal."),
+        (70, "email", "positive", None, "accounts",
+         "Anjali shared next season's forecast: cotton seed and drip kit volumes roughly doubling. Asked about "
+         "bulk pricing on BG-II cotton."),
+        (48, "call", "neutral", "g01", "ops",
+         "Anjali reported okra seed in the tomato cartons on #{g01}. She was calm about it; replacement went out "
+         "the same evening."),
+        (40, "email", "positive", "g02", "accounts",
+         "Thank-you note from Sachin: #{g02} arrived on time for top dressing and the bags were in good shape."),
+        (36, "call", "negative", "g03", "ops",
+         "Anjali complained that the battery sprayers on #{g03} sat at packed for four days and the co-op missed "
+         "its Monday spraying round. Apologised and waived the freight charge."),
+        (30, "note", "neutral", None, "accounts",
+         "Greenfield asked for SMS alerts when an order is dispatched. Logged as a feature request."),
+        (21, "meeting", "positive", None, "accounts",
+         "Visited the Shirur farm office. Sachin is happy with crop protection pricing and wants a battery "
+         "sprayer demo for member farmers."),
+        (15, "call", "neutral", "g08", "ops",
+         "Anjali flagged a duplicate (#{g08}) placed on mobile data at Shirur. Cancelled it within the hour; she "
+         "was relaxed about it."),
+        (7, "email", "neutral", "g09", "ops",
+         "Sent tracking details for the drip kits on #{g09}. The transporter says the truck is at its Pune depot."),
+        (4, "renewal", "positive", None, "accounts",
+         "Early renewal conversation. Anjali wants to renew in August 2027 and add about 200 more member farmers. "
+         "Asked for a quote on a two-year term."),
+    ],
+}
+
+# (order key, sku, rating, comment). Only delivered orders and products that were on the order.
+REVIEWS = [
+    ("g01", "SD-TOM-AR01", 1, "The tomato cartons had okra packets inside. Can't rate the seed itself, we never got it."),
+    ("s05", "SD-TOM-AR01", 2, "Got okra instead of Arka Rakshak. The replacement batch germinated well, but the mix-up cost us a week."),
+    ("g05", "SD-TOM-AR01", 2, "12 of 30 packets were okra again. The genuine Arka Rakshak packets were fine."),
+    ("s04", "FT-DAP-50", 2, "Good granule quality but four bags came split. Needs stronger bags."),
+    ("g01", "FT-NPK-191919", 5, "Dissolves completely, no clogging in our drip lines."),
+    ("s02", "FT-UREA-45", 4, "Even neem coating and no lumps. Fair price."),
+    ("g03", "EQ-BSP-16", 4, "Battery lasts a full day of spraying. Delivery was slow though."),
+    ("s06", "CP-IMD-250", 3, "Works on whitefly as expected. The invoice price didn't match the catalogue."),
+    ("s07", "SD-PDY-1121", 5, "Good germination, around 90% in our trial beds."),
+    ("g07", "SD-CTN-BG2", 5, "Even stand across the field, no complaints from members."),
+    ("s06", "CP-NEEM-1", 4, "Strong smell but it works well on aphids."),
+    ("g03", "CP-NEEM-1", 3, "Does the job. We'd prefer 5 L cans at our volumes."),
+]
+
 
 def _ts(dt: datetime) -> str:
     return dt.strftime(TS_FORMAT)
@@ -258,11 +388,17 @@ def seed(conn, ops_password: str, customer_password: str, now: datetime | None =
     rng = random.Random(42)  # fixed so every fresh seed produces the same data
 
     with conn:
+        # Customers first with no owner, since the owner is a user that doesn't exist yet.
         customer_ids = {}
-        for key, (name, city, email) in CUSTOMERS.items():
+        for key, c in CUSTOMERS.items():
+            since = now - timedelta(days=c["customer_since_days"])
             cur = conn.execute(
-                "INSERT INTO customers (name, city, contact_email, created_at) VALUES (?, ?, ?, ?)",
-                (name, city, email, _ts(now - timedelta(days=90))),
+                "INSERT INTO customers (customer_code, name, industry, tier, region, city, state, "
+                "annual_contract_value, renewal_date, status, customer_since, contact_email, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (c["customer_code"], c["name"], c["industry"], c["tier"], c["region"], c["city"], c["state"],
+                 c["annual_contract_value"], c["renewal_date"], c["status"], since.strftime("%Y-%m-%d"),
+                 c["contact_email"], _ts(since)),
             )
             customer_ids[key] = cur.lastrowid
 
@@ -277,6 +413,28 @@ def seed(conn, ops_password: str, customer_password: str, now: datetime | None =
             )
             user_ids[key] = cur.lastrowid
 
+        conn.executemany(
+            "UPDATE customers SET account_owner_id = ? WHERE id = ?",
+            [(user_ids[c["owner"]], customer_ids[key]) for key, c in CUSTOMERS.items()],
+        )
+
+        for key, contacts in CONTACTS.items():
+            conn.executemany(
+                "INSERT INTO customer_contacts (customer_id, full_name, title, email, phone, is_primary) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                [(customer_ids[key], *contact) for contact in contacts],
+            )
+
+        address_ids = {}
+        for key, addresses in ADDRESSES.items():
+            for address_key, address in addresses.items():
+                cur = conn.execute(
+                    "INSERT INTO customer_addresses (customer_id, label, line1, city, state, pincode, is_default) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (customer_ids[key], *address),
+                )
+                address_ids[key, address_key] = cur.lastrowid
+
         products = {}
         for sku, name, category, description, price, stock in PRODUCTS:
             cur = conn.execute(
@@ -286,7 +444,7 @@ def seed(conn, ops_password: str, customer_password: str, now: datetime | None =
             )
             products[sku] = (cur.lastrowid, price, category)
 
-        order_ids, placed_at, delivered_at = {}, {}, {}
+        order_ids, placed_at, delivered_at, order_skus = {}, {}, {}, {}
         for order in ORDERS:
             customer_user = user_ids[order["customer"]]
             placed = now - order["ago"]
@@ -308,13 +466,14 @@ def seed(conn, ops_password: str, customer_password: str, now: datetime | None =
                 raise RuntimeError(f"order {order['key']}: status history runs past now; make it older")
 
             cur = conn.execute(
-                "INSERT INTO orders (customer_id, placed_by, order_status, total, delivery_note, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (customer_ids[order["customer"]], customer_user, order["status"], total,
-                 order["note"], _ts(placed), _ts(t)),
+                "INSERT INTO orders (customer_id, placed_by, address_id, order_status, total, delivery_note, "
+                "client_network, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (customer_ids[order["customer"]], customer_user, address_ids[order["customer"], order["address"]],
+                 order["status"], total, order["note"], order["network"], _ts(placed), _ts(t)),
             )
             order_id = cur.lastrowid
             order_ids[order["key"]], placed_at[order["key"]] = order_id, placed
+            order_skus[order["key"]] = {sku for sku, _ in items}
             if order["status"] == "delivered":
                 delivered_at[order["key"]] = t
 
@@ -359,6 +518,31 @@ def seed(conn, ops_password: str, customer_password: str, now: datetime | None =
             conn.execute(
                 "INSERT INTO order_feedback (order_id, user_id, rating, comment, created_at) VALUES (?, ?, ?, ?, ?)",
                 (order_ids[order_key], user_ids[customer_of[order_key]], rating, comment, _ts(left_at)),
+            )
+
+        for key, interactions in INTERACTIONS.items():
+            for days, kind, sentiment, order_key, author, summary in interactions:
+                at = now - timedelta(days=days)
+                if order_key and placed_at[order_key] > at:
+                    raise RuntimeError(f"interaction on {order_key}: dated before the order was placed")
+                conn.execute(
+                    "INSERT INTO customer_interactions "
+                    "(customer_id, order_id, interaction_type, summary, sentiment, created_by, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (customer_ids[key], order_ids.get(order_key), kind, summary.format(**order_ids),
+                     sentiment, user_ids[author], _ts(at)),
+                )
+
+        for order_key, sku, rating, comment in REVIEWS:
+            if order_key not in delivered_at or sku not in order_skus[order_key]:
+                raise RuntimeError(f"review {order_key}/{sku}: must be a product on a delivered order")
+            reviewed_at = min(delivered_at[order_key] + timedelta(hours=rng.randint(24, 120)), now)
+            customer = customer_of[order_key]
+            conn.execute(
+                "INSERT INTO product_reviews (product_id, customer_id, user_id, order_id, rating, comment, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (products[sku][0], customer_ids[customer], user_ids[customer], order_ids[order_key],
+                 rating, comment, _ts(reviewed_at)),
             )
 
     return True
