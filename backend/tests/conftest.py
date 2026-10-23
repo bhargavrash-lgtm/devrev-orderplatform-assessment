@@ -1,8 +1,8 @@
 """Shared test setup.
 
-Passwords and the session secret are read from the environment (SEED_OPS_PASSWORD,
-SEED_CUSTOMER_PASSWORD, SESSION_SECRET). Any that are not set get a random value for this
-test run, so nothing is hardcoded and the suite still runs without a .env.
+Passwords and secrets are read from the environment (SEED_OPS_PASSWORD,
+SEED_CUSTOMER_PASSWORD, SESSION_SECRET, MCP_API_KEY). Any that are not set get a random value
+for this test run, so nothing is hardcoded and the suite still runs without a .env.
 """
 
 import os
@@ -17,6 +17,8 @@ for _name in ("SEED_OPS_PASSWORD", "SEED_CUSTOMER_PASSWORD"):
         os.environ[_name] = secrets.token_urlsafe(16)
 if len(os.environ.get("SESSION_SECRET", "")) < auth.MIN_SECRET_LENGTH:
     os.environ["SESSION_SECRET"] = secrets.token_hex(32)
+if len(os.environ.get("MCP_API_KEY", "")) < 32:
+    os.environ["MCP_API_KEY"] = secrets.token_hex(32)
 
 
 @pytest.fixture

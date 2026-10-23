@@ -1,10 +1,11 @@
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+import mcp_server
 from auth import load_session_settings
 from auth import router as auth_router
 from db import init_db
@@ -14,7 +15,15 @@ from db import init_db
 async def lifespan(app: FastAPI):
     app.state.session = load_session_settings()  # refuses to start without a usable SESSION_SECRET
     init_db()
-    yield
+    async with AsyncExitStack() as stack:
+        # /mcp is only served when MCP_API_KEY is set; otherwise it answers 404.
+        app.state.mcp_app = None
+        key = mcp_server.load_api_key()
+        if key:
+            mcp_app = mcp_server.build_http_app(key)
+            await stack.enter_async_context(mcp_server.server.session_manager.run())
+            app.state.mcp_app = mcp_app
+        yield
 
 
 app = FastAPI(title="OrderWave Order Platform", lifespan=lifespan)
@@ -36,6 +45,7 @@ async def validation_error(request: Request, exc: RequestValidationError):
 
 
 app.include_router(auth_router)
+app.add_route("/mcp", mcp_server.McpEndpoint(), include_in_schema=False)
 
 
 @app.get("/api/health")

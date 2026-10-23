@@ -87,6 +87,8 @@ curl http://127.0.0.1:8000/api/health
 # {"status":"ok"}
 ```
 
+When `MCP_API_KEY` is set (32+ characters), the same server also serves the read-only MCP endpoint at `/mcp`. Without it, `/mcp` returns 404 and a warning is logged at startup. See "Connecting an external AI platform" in the root README. The tools live in `mcp_server.py`, and their queries in `mcp_tools.py`.
+
 ## Authentication
 
 - `POST /api/auth/login` takes `{"email", "password"}`. It sets a signed, HTTP-only, SameSite=Lax session cookie that holds only the user id and lasts 8 hours, and returns `{id, email, full_name, role, customer_id}`. A wrong password and an unknown email both return 401 `{"error": "Invalid email or password"}`. After 5 failed attempts for one email within 10 minutes, it returns 429 until the window passes. The counter is kept in memory, per process.
