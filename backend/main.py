@@ -3,13 +3,14 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 import mcp_server
 from auth import load_session_settings
 from auth import router as auth_router
 from customers_api import router as customers_router
-from db import init_db
+from db import BACKEND_DIR, init_db
 from orders_api import router as orders_router
 from records_api import MAX_UPLOAD_BYTES, ensure_uploads_dir
 from records_api import router as records_router
@@ -64,6 +65,10 @@ app.include_router(orders_router)
 app.include_router(records_router)
 app.include_router(customers_router)
 app.add_route("/mcp", mcp_server.McpEndpoint(), include_in_schema=False)
+# Product images only: this one folder, read-only, no directory listing. Nothing else under /static,
+# and never the uploads folder (attachments are downloaded through /api/attachments/{id}).
+app.mount("/static/products", StaticFiles(directory=BACKEND_DIR / "static" / "products", html=False),
+          name="product-images")
 
 
 @app.get("/api/health")

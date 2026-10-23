@@ -69,9 +69,48 @@ A customer asking for another customer's order gets the same 404 as for an order
 
 See [`backend/README.md`](backend/README.md) for setting up the backend, seeding the demo data and starting the server.
 
+## Frontend
+
+React 18 with TypeScript, Vite, React Router, TanStack Query and Tailwind CSS, in [`frontend/`](frontend/). Needs Node 18 or newer.
+
+**Install**
+
+```bash
+cd frontend
+npm install
+```
+
+**Develop** (two terminals):
+
+```bash
+# Terminal 1: the API on port 8000 (from backend/, with the venv active and .env loaded)
+uvicorn main:app --port 8000
+
+# Terminal 2: the frontend on port 5173
+cd frontend
+npm run dev
+```
+
+Open http://localhost:5173. The Vite dev server forwards `/api` and `/static` to `http://localhost:8000`, so the browser only talks to one origin. The session cookie stays first-party, and the backend doesn't need CORS.
+
+**Test and build**
+
+```bash
+npm test          # Vitest + React Testing Library
+npm run build     # type-checks with tsc, then builds to frontend/dist
+```
+
+Notes:
+
+- Design tokens (colours, radii, shadows, spacing, type scale) are defined once, in `frontend/tailwind.config.ts`.
+- The shared components are in `frontend/src/components/ui`.
+- User-written text is always rendered as plain text, and nothing sensitive is stored in the browser.
+- The only session state is the backend's HTTP-only cookie.
+
 ## Tests
 
-From `backend/`, run `pytest`. The tests seed a temporary database and check the data, its relationships and the views.
+- Backend: from `backend/`, run `pytest`. The tests seed a temporary database and check the data, its relationships, the views, the API and the MCP server.
+- Frontend: from `frontend/`, run `npm test`.
 
 ## Demo logins
 

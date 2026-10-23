@@ -1,0 +1,41 @@
+@import "@fontsource/inter/400.css";
+@import "@fontsource/inter/500.css";
+@import "@fontsource/inter/600.css";
+@import "@fontsource/inter/700.css";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    @apply bg-page text-ink antialiased;
+    font-feature-settings: "cv11", "ss01";
+    -webkit-text-size-adjust: 100%;
+  }
+  body {
+    @apply min-h-screen bg-page font-sans text-base text-ink;
+  }
+  ::selection {
+    @apply bg-accent-100 text-accent-900;
+  }
+  /* One focus style for everything that can take keyboard focus. */
+  :focus-visible {
+    outline: none;
+    @apply shadow-focus;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+@layer components {
+  .focus-ring {
+    @apply outline-none focus-visible:shadow-focus;
+  }
+}
