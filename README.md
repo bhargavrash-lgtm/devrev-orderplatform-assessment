@@ -1,197 +1,202 @@
 # OrderWave Order Platform
 
-This is a take-home assessment: a customer storefront plus an ops back office for an agricultural inputs supplier. It has a REST API, a customer master with order history, feedback and interactions, and data exports for analysis by an external AI platform.
+## What this is
 
-## Scenario
+An order management app for a fictional B2B supplier of agricultural inputs. Customers use a storefront to browse the catalogue, place orders and follow them. The supplier's ops team uses a back office to run orders, issues and accounts. It was built as the rapid-prototype part of a take-home assessment.
 
-TODO
+The stack is FastAPI and SQLite on the backend, and React with TypeScript on the frontend. A read-only MCP endpoint lets an external AI platform analyse the data. The app itself has no AI in it.
+
+## The scenario
+
+OrderWave sells seeds, fertilisers, crop protection and equipment to distributors and co-ops in India. Its biggest account, Sundaram Agro Distributors (Bengaluru, enterprise), orders from a rural field office with poor mobile coverage. Checkout gets queued offline, the rep retries, and the same order goes through twice. This happens three times, plus once at Greenfield Seeds Co-op (Pune). Customers also keep getting okra seed instead of the tomato seed SD-TOM-AR01, and deliveries to Pune run late. Sundaram's account history turns negative, ending in a tense renewal call, and the account is marked at risk. All companies, people and data are fictional.
+
+## Run it locally
+
+You need **Python 3.11+** and **Node 18+**. In PowerShell, from the repository root:
+
+```powershell
+Copy-Item .env.example .env        # first time only, then fill in every value in .env
+powershell -ExecutionPolicy Bypass -File scripts\start.ps1
+```
+
+`start.ps1`:
+
+1. checks Python, Node and `.env`;
+2. installs whatever dependencies are missing;
+3. starts the API on port 8000 and the frontend on port 5173, each in its own window;
+4. waits until both answer.
+
+Then open **http://localhost:5173**. Stop everything with `scripts\stop.ps1`. On macOS or Linux, run `./scripts/start.sh` and press Ctrl+C to stop.
+
+**Demo accounts:** `sundaram@orderwave.demo` and `greenfield@orderwave.demo` (customers), and `ops@orderwave.demo` and `accounts@orderwave.demo` (ops). The passwords are whatever you set as `SEED_CUSTOMER_PASSWORD` and `SEED_OPS_PASSWORD` in **`.env` at the repository root**. That file is git-ignored, and the scripts never print its values. Generate `SESSION_SECRET` and `MCP_API_KEY` with `python -c "import secrets; print(secrets.token_hex(32))"`.
+
+**Single port:** `scripts\start-prod.ps1` builds the frontend and serves everything from FastAPI on **http://localhost:8000**: the app, the API, product images, `/docs` and `/mcp`. Use this mode behind a tunnel.
+
+## Reset the demo data
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\reset_demo.ps1
+```
+
+It asks for confirmation, refuses while the backend is running, deletes `backend/data.db` and the uploaded files, then seeds again. The seed always produces the same story; only the dates move with today's date. After a reset it prints:
+
+| | |
+|---|---|
+| Customers | 2: Sundaram Agro (SUN-001, at risk), Greenfield Seeds (GRN-002, active) |
+| Users | 4: 2 customer, 2 ops |
+| Orders | 25: 17 delivered, 2 shipped, 1 packed, 2 confirmed, 1 placed, 2 cancelled |
+| Issues | 12: 7 resolved, 3 investigating, 2 open. By category: duplicate_order 4, delay 3, wrong_item 3, billing 1, damaged 1 |
+| Interactions | 20 (6 negative, 7 neutral, 7 positive) |
+| Reviews / feedback / messages | 12 / 13 / 14 |
+
+## Architecture
+
+```
+  Browser ──► Vite dev server :5173 ──/api, /static──┐       (development)
+     │                                                ▼
+     └───────────────────────────────────────► FastAPI :8000 ──► SQLite (backend/data.db, WAL)
+                                  (single port:  /  /assets  /api  /static/products  /docs  /mcp)
+                                                     ▲   /mcp: read-only connection
+  Computer by DevRev ──► cloudflared tunnel ─────────┘   (API key, read-only MCP tools)
+```
+
+The browser only ever talks to one origin, so the session cookie works without CORS. The MCP endpoint opens SQLite read-only, and WAL mode lets it read while orders are being written.
 
 ## Data model
 
-SQLite, defined in [`backend/schema.sql`](backend/schema.sql).
+Defined in [`backend/schema.sql`](backend/schema.sql).
 
-- Customer master: `customers` (code, tier, region, account owner, contract value, renewal date, status), `customer_contacts`, `customer_addresses`, `customer_interactions`.
-- Catalogue and orders: `products`, `orders` (with delivery address and the client's network state when the order was placed), `order_items`, `order_events` (status history).
-- After the order: `order_messages`, `issues` (with an optional Jira key), `order_feedback`, `product_reviews`, `attachments`.
-- Views: `customer_summary` (order count, lifetime value, issue counts, average rating and negative interactions per customer; `unresolved_issues` means open or investigating, and `open_issues_only` counts only newly reported issues not yet being worked on) and `customer_timeline` (orders, issues, messages, feedback and interactions in one stream).
+| Table | Holds |
+|---|---|
+| `customers` | Customer master: code, tier, region, account owner, contract value, renewal date, status |
+| `customer_contacts` | People at each customer, one primary |
+| `customer_addresses` | Delivery addresses, one default |
+| `users` | Logins: customer users (linked to a customer) and ops users; bcrypt password hashes |
+| `products` | Catalogue: SKU, category, price in INR, stock, image |
+| `orders` | Status, total, delivery note, address, `client_network` (good / weak / offline_sync), `idempotency_key` |
+| `order_items` | Lines with the price at the time of ordering |
+| `order_events` | Status history: from, to, who, when |
+| `order_messages` | Conversation between the customer and ops on an order |
+| `issues` | Problems on an order: category, severity, status, optional Jira key |
+| `attachments` | Uploaded file metadata (files live in `backend/uploads/`) |
+| `order_feedback` | One 1–5 rating and comment per delivered order |
+| `product_reviews` | Product ratings, tied to a delivered order |
+| `customer_interactions` | Internal account history: calls, emails, meetings, notes, escalations, renewals, with sentiment |
 
-## API
+The two views are:
+- `customer_summary`: per customer, order count, lifetime value, unresolved / open / investigating / total issues, average rating and negative interactions;
+- `customer_timeline`: orders, issues, messages, feedback and interactions in one stream.
 
-JSON over HTTP, served by the backend. Every route except `/api/health` and `/api/auth/login` needs a session cookie from logging in. Errors always have the shape `{"error": "message"}`.
+## REST API
 
-| Method | Path | Who can call it | Purpose |
+Errors are always `{"error": "message"}`. Every route except `/api/health` and `/api/auth/login` needs a session. Interactive docs are at `/docs`.
+
+| Method | Path | Who | Notes and filters |
 |---|---|---|---|
-| `GET` | `/api/health` | anyone | Health check |
-| `POST` | `/api/auth/login` | anyone | Log in with email and password; sets the session cookie |
-| `POST` | `/api/auth/logout` | anyone | Clear the session cookie |
-| `GET` | `/api/auth/me` | logged-in user | The current user |
-| `GET` | `/api/products` | logged-in user | Catalogue. Filters `q` (name or SKU), `category`, `in_stock`; `sort` = `name`, `unit_price`, `stock` (prefix `-` for descending); paged |
-| `GET` | `/api/orders` | customer: own orders; ops: all | Order list with items. Filters `id`, `customer` (ops only), `product`, `status` (comma-separated), `client_network`, `from` / `to` (YYYY-MM-DD, inclusive); `sort` = `created_at`, `total`, `id`; paged |
-| `GET` | `/api/orders/{id}` | customer: own orders; ops: all | One order with items, address, status history, counts of messages, issues and attachments, and whether it has feedback |
-| `POST` | `/api/orders` | customer (for themselves); ops (with `customer_id`) | Place an order: checks stock, copies current prices, writes the first status event and reduces stock in one transaction |
-| `PUT` | `/api/orders/{id}` | ops: any allowed step; customer: cancel own order while `placed` | Change status along placed → confirmed → packed → shipped → delivered, one step at a time, or cancel from placed, confirmed or packed (cancelling puts the stock back) |
-| `GET` | `/api/orders/{id}/messages` | anyone who can see the order | Order conversation, oldest first; paged (default 50) |
-| `POST` | `/api/orders/{id}/messages` | anyone who can see the order | Post a message (1 to 2000 characters; stored as plain text) |
-| `GET` | `/api/orders/{id}/issues` | anyone who can see the order | Issues reported on the order |
-| `POST` | `/api/orders/{id}/issues` | anyone who can see the order | Report an issue (category, severity, description); only ops may set `jira_key` |
-| `GET` | `/api/issues` | customer: own issues; ops: all | Issues across orders. `status` = `unresolved` (default: open or investigating), `open`, `investigating`, `resolved`, `all`; filters `category`, `severity`, `customer` (ops only), `jira_key`, `order_id`; `sort` = `created_at`, `severity`, `status`; paged |
-| `PUT` | `/api/issues/{id}` | ops | Change an issue's status, severity, category or `jira_key` (format `ABC-123`, or null) |
-| `GET` | `/api/orders/{id}/feedback` | anyone who can see the order | The order's feedback, or 404 |
-| `POST` | `/api/orders/{id}/feedback` | customer, own delivered order | Rate the order 1 to 5 with an optional comment; once per order (409 after that) |
-| `GET` | `/api/products/{id}/reviews` | logged-in user | Product reviews with the average rating and count; paged |
-| `POST` | `/api/products/{id}/reviews` | customer | Review a product from one of their delivered orders that contains it; once per product per order (409 after that) |
-| `GET` | `/api/orders/{id}/attachments` | anyone who can see the order | Attachment metadata (no file contents) |
-| `POST` | `/api/orders/{id}/attachments` | anyone who can see the order | Upload a file (multipart `file`, optional `issue_id` on the same order). PNG, JPG, PDF or UTF-8 text, checked by content; up to 5 MB |
-| `GET` | `/api/attachments/{id}` | anyone who can see the order | Download as an attachment, with `X-Content-Type-Options: nosniff` |
-| `GET` | `/api/customer` | customer | Their own basic profile: code, name, city, state, addresses, and contacts (name, title, primary) |
-| `GET` | `/api/customers` | ops | Customer master with summary numbers and account owner. Filters `name`, `tier`, `status`, `region`, `account_owner`; `sort` = `name`, `lifetime_value`, `last_order_at`, `unresolved_issues`, `avg_rating`; paged |
-| `GET` | `/api/customers/{id}` | ops | One customer: master, summary numbers, contacts (with email and phone), addresses, account owner |
-| `GET` | `/api/customers/{id}/orders` | ops | That customer's orders, with the same shape and filters as `GET /api/orders` |
-| `GET` | `/api/customers/{id}/timeline` | ops | Orders, issues, messages, feedback and interactions in one stream, newest first. Filters `event_types` (comma-separated), `from`, `to`; paged (up to 200) |
-| `GET` | `/api/customers/{id}/interactions` | ops | Account history (calls, emails, meetings, notes, escalations, renewal talks). Filters `interaction_type`, `sentiment`, `from`, `to`; newest first; paged |
-| `POST` | `/api/customers/{id}/interactions` | ops | Log an interaction: type, summary (5 to 2000 characters), sentiment (default neutral), optional `order_id` of that customer |
-| `GET` | `/api/insights` | ops | Orders by status and client network, unresolved issues by category and severity, issues by status, feedback average and rating distribution, top customers by unresolved issues, recurring issue categories, the 10 latest events, and customers at risk with reasons |
-| `POST` | `/mcp` | holder of `MCP_API_KEY` | Read-only MCP server for an external AI platform (see below) |
+| POST | `/api/auth/login`, `/api/auth/logout`; GET `/api/auth/me` | anyone / signed in | Sets or clears the session cookie |
+| GET | `/api/products`, `/api/products/{id}/reviews` | signed in | `q`, `category`, `in_stock`, `sort` (name, unit_price, stock), paging |
+| POST | `/api/products/{id}/reviews` | customer | Needs a delivered order of theirs containing the product |
+| GET | `/api/orders` | customer: own; ops: all | `id`, `customer` (ops), `product`, `status` (comma list), `client_network`, `from`, `to`, `sort` (created_at, total, id), paging |
+| GET | `/api/orders/{id}` | customer: own; ops: all | Items, address, status history, counts, has_feedback |
+| POST | `/api/orders` | customer; ops with `customer_id` | Optional `Idempotency-Key` header (see below) |
+| PUT | `/api/orders/{id}` | ops: next step or cancel; customer: cancel while placed | One step at a time; cancel puts stock back |
+| GET, POST | `/api/orders/{id}/messages` | anyone who can see the order | Paged, oldest first |
+| GET, POST | `/api/orders/{id}/issues` | anyone who can see the order | Only ops may set `jira_key` |
+| GET | `/api/issues` | customer: own; ops: all | `status` (unresolved = open + investigating by default, open, investigating, resolved, all), `category`, `severity`, `customer`, `jira_key`, `order_id`, `sort` |
+| PUT | `/api/issues/{id}` | ops | status, severity, category, `jira_key` (like `SCRUM-24`, or null) |
+| GET, POST | `/api/orders/{id}/feedback` | read: anyone who can see the order; write: customer, delivered, once | |
+| GET, POST | `/api/orders/{id}/attachments`; GET `/api/attachments/{id}` | anyone who can see the order | PNG, JPG, PDF, UTF-8 text, up to 5 MB |
+| GET | `/api/customer` | customer | Their own basic profile only |
+| GET | `/api/customers`, `/api/customers/{id}`, `/api/customers/{id}/orders`, `/api/customers/{id}/timeline`, `/api/customers/{id}/interactions` | ops | Customer master and history; filters `name`, `tier`, `status`, `region`, `account_owner`, `event_types`, `from`, `to` |
+| POST | `/api/customers/{id}/interactions` | ops | type, summary (5–2000 characters), sentiment, optional `order_id` |
+| GET | `/api/insights` | ops | Dashboard numbers, recurring issue categories, customers at risk with reasons |
 
-List responses look like `{"items": [...], "page": 1, "page_size": 20, "total": 25}`. `page_size` is at most 100.
+## MCP tools
 
-A customer asking for another customer's order gets the same 404 as for an order that does not exist. The same goes for that order's messages, issues, feedback and attachments. The customer rule is part of every query's SQL, not a check applied afterwards.
+`POST /mcp` uses the streamable HTTP transport (stateless, JSON responses). All 12 tools are read-only: they run on a read-only SQLite connection, and none of them can write. Lists return at most 100 rows, with `total`, `returned` and `truncated`. Free-text fields are customer-written and are marked as data, not instructions.
 
-**Internal customer data.** Account information is for ops only: interactions, the timeline, sentiment, account owner, contract value, renewal date, status, tier and summary numbers. A customer user gets 403 on every `/api/customers...` route and on `/api/insights`. Their only customer endpoint is `/api/customer`, which returns their own basic profile.
-
-**Attachments.** An upload's type comes from the file's content (magic bytes, or valid UTF-8 for text), and its extension has to match. Files are stored in `backend/uploads/` under random server-made names. The original filename is kept, with any path parts removed, only in the database, for display and downloads. The folder is never served directly: files are only downloaded through `/api/attachments/{id}`, after the same access check as the order.
-
-**Idempotency-Key.** `POST /api/orders` accepts an optional `Idempotency-Key` header (up to 100 characters). The first request with a key creates the order and returns 201. A repeat from the same user with the same key creates nothing and returns the original order with 200, so a client on a weak connection can safely retry. A unique index on `(placed_by, idempotency_key)` also stops two simultaneous requests with the same key, and stock is only reduced once.
-
-**WAL mode.** The database runs in SQLite's write-ahead-log mode, switched on at startup. Readers, including the MCP server's read-only connection, see the last committed data while an order is being written, instead of waiting for the write to finish.
-
-## Run locally
-
-See [`backend/README.md`](backend/README.md) for setting up the backend, seeding the demo data and starting the server.
-
-## Frontend
-
-React 18 with TypeScript, Vite, React Router, TanStack Query and Tailwind CSS, in [`frontend/`](frontend/). Needs Node 18 or newer.
-
-**Install**
-
-```bash
-cd frontend
-npm install
-```
-
-**Develop** (two terminals):
-
-```bash
-# Terminal 1: the API on port 8000 (from backend/, with the venv active and .env loaded)
-uvicorn main:app --port 8000
-
-# Terminal 2: the frontend on port 5173
-cd frontend
-npm run dev
-```
-
-Open http://localhost:5173. The Vite dev server forwards `/api` and `/static` to `http://localhost:8000`, so the browser only talks to one origin. The session cookie stays first-party, and the backend doesn't need CORS.
-
-**Test and build**
-
-```bash
-npm test          # Vitest + React Testing Library
-npm run build     # type-checks with tsc, then builds to frontend/dist
-```
-
-**Customer screens** (sign in as `sundaram@orderwave.demo` or `greenfield@orderwave.demo`):
-
-- **Shop** (`/shop`): the catalogue, with category chips, an "in stock only" switch, sorting (name, price or stock), and the top-bar search (debounced, using the products API's `q` filter). Each card shows the price in INR and the stock. Clicking a card opens the product: a larger image, description, price, add to cart, and reviews with average, count, reviewer company and date. A customer can review a product from one of their delivered orders that contains it.
-- **Cart**: a drawer from the top-bar cart button, with a live item count, a quantity stepper (1 up to the stock, at most 1000 per line as the API allows), remove, and subtotal. It lives in memory only, so it resets on a full page refresh, by design.
-- **Checkout** (`/checkout`): the order summary, a delivery address picker from the customer's addresses, an optional delivery note, and "Connection when ordering". That last one is saved as the order's `client_network`; it simulates a field rep ordering on poor coverage, which is how the duplicate orders in the demo data happen. Placing the order shows a confirmation with the order id, items and total.
-- **My orders** (`/orders`): a table (cards on phones) with filters for order number, status and date range, sent to the orders API as `id`, `status`, `from` and `to`; paged.
-- **Order** (`/orders/:id`): status, total, delivery address and note, a progress timeline from the order's status history, the items, and tabs:
-  - Conversation: a message thread with support; Ctrl + Enter sends.
-  - Issues: issues with severity, status and any Jira key, plus a "Report an issue" form.
-  - Attachments: drag and drop or pick a file. PNG, JPG, PDF or text up to 5 MB, the same limits the server checks; downloads go through the API.
-  - Feedback: a 1 to 5 star rating and comment, once per delivered order.
-
-  Someone else's order shows the same not-found page as a missing one.
-
-**How the Idempotency-Key works.** Each checkout attempt gets one key from `crypto.randomUUID()`, kept in the checkout page's state and sent as the `Idempotency-Key` header.
-
-- **Retries reuse it.** If the request fails or times out (30 seconds), "Try again" sends the same key. If the first request did reach the server, the API returns that order (200) instead of creating a second one.
-- **A double click sends one request.** The button is disabled, and a guard blocks a second submit while one is in flight.
-- **A new key** is made only after a successful order, or when the cart contents change.
-
-`node scripts/e2e_customer.mjs` runs the customer flow against the running app; it needs `SEED_CUSTOMER_PASSWORD` in the environment.
-
-**Ops screens** (sign in as `ops@orderwave.demo` or `accounts@orderwave.demo`). These are denser working views: compact tables with sticky headers, and filters kept in the URL so a view can be shared or reloaded.
-
-| Screen | Path | What it's for |
+| Tool | Returns | Read-only |
 |---|---|---|
-| Dashboard | `/ops` | The day at a glance from `/api/insights`: orders by status, unresolved and open issues, offline and weak-signal orders, ratings, recurring issue categories (duplicates flagged), customers at risk with the backend's reasons, latest issues and activity. Every number links to the matching filtered list. |
-| Orders | `/ops/orders` | All orders, filtered by order number, customer, product, status, connection and date range, with sort and paging. |
-| Order | `/ops/orders/:id` | The customer card (links to the customer 360), status timeline with who changed what, and a status control. It only offers the next allowed step, and cancelling asks for confirmation first. Tabs: conversation (replies are labelled as the ops team), issues (report, and edit status, severity, category and Jira key), attachments (list and download), and the customer's feedback (read only). |
-| Issues | `/ops/issues` | The issue queue. By default it shows unresolved issues (open plus investigating), and it filters by status, severity, category, customer and Jira key. An editor drawer changes status, severity and category and sets or clears the Jira key, which must look like `SCRUM-24`. |
-| Customers | `/ops/customers` | The customer master, sorted by unresolved issues so accounts that need attention come first, with an "At risk only" switch, search, account health, negative interactions, orders, rating, lifetime value, renewal and owner. |
-| Customer 360 | `/ops/customers/:id` | Profile, contract fields, contacts and addresses; summary numbers; an account health panel; and tabs for overview, orders, the combined timeline (orders, issues, messages, feedback and interactions) and interactions. Interactions can be added: call, email, meeting, note, escalation or renewal, with a sentiment and an optional order. |
+| `get_data_schema` | Tables, links, allowed values, currency, the scenario | yes |
+| `search_orders` | Orders filtered by customer, product, status, client_network, dates, total | yes |
+| `get_order` | One order with items, history, address, messages, issues, feedback, attachment metadata | yes |
+| `list_customers` | Customer master with summary numbers | yes |
+| `get_customer_profile` | One customer: master, contacts (name and title), addresses, summary | yes |
+| `get_customer_timeline` | Orders, issues, messages, feedback and interactions, newest first | yes |
+| `list_issues` | Issues with products and Jira key; unresolved by default | yes |
+| `recurring_issues` | Issues grouped by category, product, customer, client_network or Jira key; all statuses by default | yes |
+| `list_feedback` | Order ratings and comments | yes |
+| `list_reviews` | Product reviews | yes |
+| `list_messages` | Order conversations, with author name and role | yes |
+| `list_interactions` | Account history with sentiment | yes |
 
-The account health panel uses only what the API defines: the status on the customer record, the backend's at-risk list and reasons, the negative interaction count and the latest interaction's sentiment. It quotes the backend's at-risk rule (status `at_risk`, or at least 2 negative interactions in the last 90 days) rather than calculating a score of its own.
+## Security notes
 
-`node scripts/e2e_ops.mjs` runs the ops flow against the running app; it needs `SEED_OPS_PASSWORD` and `SEED_CUSTOMER_PASSWORD` in the environment.
+- **Customer scoping:** a customer only reaches their own company's orders and records. The rule is in each SQL `WHERE` clause, and someone else's order gets the same 404 as a missing one. Ops-only data (interactions, sentiment, contract fields) is never sent to customers.
+- **SQL:** queries are parameterised, sort and group-by fields come from whitelists, and `%`, `_` and `\` are escaped in contains-filters.
+- **Sessions:**
+  - a signed, HttpOnly, SameSite=Lax cookie holding only the user id, valid for 8 hours (`Secure` when `COOKIE_SECURE=true`);
+  - bcrypt password hashes;
+  - the same error for a wrong password and an unknown email;
+  - 5 failed logins in 10 minutes returns 429.
+- **Uploads:** the type is checked from the file's magic bytes (and the extension must match), with a 5 MB limit and random file names on disk. Downloads go only through the API, as attachments with `X-Content-Type-Options: nosniff`. The uploads folder is never served.
+- **Single-port mode** serves only `frontend/dist`. Encoded dots, backslashes and absolute paths get 404, and unknown `/api` paths keep the JSON 404.
+- **MCP:**
+  - read-only;
+  - needs `MCP_API_KEY` (32+ characters), compared in constant time, and is off when the key is unset;
+  - never returns login accounts, emails or password hashes;
+  - **rotate the key after a demo.**
+- **Frontend:** all user text is rendered as plain text, and nothing sensitive is kept in browser storage.
+- **Data:** everything in the repository is fictional demo data. Secrets live only in `.env`.
 
-Notes:
+## Idempotency-Key
 
-- Design tokens (colours, radii, shadows, spacing, type scale) are defined once, in `frontend/tailwind.config.ts`.
-- The shared components are in `frontend/src/components/ui`.
-- User-written text is always rendered as plain text, and nothing sensitive is stored in the browser.
-- The only session state is the backend's HTTP-only cookie.
+The duplicate orders in the story come from retries on a bad connection: the first request was queued offline and went through later, and the retry created a second order. To prevent this:
+- Checkout gives each attempt one `Idempotency-Key` (`crypto.randomUUID()`) and sends the same key again if the request fails or times out.
+- The server keeps a unique index on `(placed_by, idempotency_key)`. A repeat returns the original order with **200** instead of creating a new one (**201**), and stock is reduced only once.
+- A new key is made only after a successful order, or when the cart changes.
+- The button is disabled while the request is in flight, so a double click sends one request.
+
+## How Computer by DevRev uses this
+
+Computer connects only through the read-only MCP endpoint:
+
+- **Support analysis:** it reads issues, order conversations and status history to summarise what is going wrong on an account, and what has already been tried.
+- **Recurring bugs:** `recurring_issues` shows product teams patterns such as duplicate orders from offline-synced checkouts, and the same SKU repeatedly shipped wrong.
+- **Customer feedback:** it summarises ratings, reviews and the interaction history, for example why Sundaram Agro is at risk before its renewal.
+
+## How to connect Computer
+
+1. Set `MCP_API_KEY` in `.env`, then run `scripts\start-prod.ps1` (single port 8000).
+2. Expose it: `cloudflared tunnel --url http://localhost:8000`. This prints a `https://<tunnel-host>` address.
+3. In Computer, add a custom MCP connector:
+   - server URL `https://<tunnel-host>/mcp`;
+   - authentication "Personal access token";
+   - the value of `MCP_API_KEY` as the token.
+
+A quick tunnel gets a new address each time it starts. Rotate the key after a demo.
 
 ## Tests
 
-- Backend: from `backend/`, run `pytest`. The tests seed a temporary database and check the data, its relationships, the views, the API and the MCP server.
-- Frontend: from `frontend/`, run `npm test`.
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\check_all.ps1
+```
 
-## Demo logins
+It runs the backend tests (pytest), the frontend tests (Vitest and React Testing Library), the production build, and `scripts/mcp_check.py`, and prints one PASS or FAIL line for each. The MCP check seeds a fresh database in a temporary folder, with a throwaway key, and checks the real answers:
+- unresolved and open counts agree across MCP, REST and insights;
+- the duplicate_order, wrong_item and delay groups have the right counts;
+- Sundaram is at risk, with the backend's reasons;
+- a REST write shows up in the MCP timeline;
+- the tool list matches this README and is read-only;
+- a call without the key is refused.
 
-TODO
+`scripts/e2e_customer.mjs` and `scripts/e2e_ops.mjs` exercise a running app through the Vite proxy.
 
-## Live demo
+## Limitations
 
-TODO
-
-## Connecting an external AI platform
-
-The backend serves a read-only [MCP](https://modelcontextprotocol.io) server at `/mcp` (streamable HTTP, on the same port as the API). An external AI platform can add it as a custom connector and analyse the orders, customers, issues, feedback, reviews, conversations and interactions. It offers 12 read-only tools, from `get_data_schema` and `search_orders` to `recurring_issues` and `get_customer_timeline`. The tools use a read-only database connection, return at most 100 rows per call, and never expose login accounts, password hashes or user email addresses.
-
-1. **Set a key.** `/mcp` is turned off until `MCP_API_KEY` is set to at least 32 characters:
-
-   ```bash
-   python -c "import secrets; print(secrets.token_hex(32))"
-   ```
-
-   Put the result in `MCP_API_KEY` (see `.env.example`). It is a separate key from user logins, and it only gives read access.
-2. **Start the server** from `backend/`: `uvicorn main:app --port 8000`. Check it with:
-
-   ```bash
-   python ../scripts/mcp_smoke.py http://localhost:8000
-   ```
-3. **Expose it with a tunnel**, for example:
-
-   ```bash
-   cloudflared tunnel --url http://localhost:8000
-   ```
-
-   This prints a public `https://<tunnel-host>` address.
-4. **Add the connector.** In the platform's custom connector dialog use:
-   - Server URL: `https://<tunnel-host>/mcp`
-   - Authentication type: **Personal access token**
-   - Token: the value of `MCP_API_KEY`
-
-   The server accepts the key as `Authorization: Bearer <key>`, `Authorization: token <key>` or `X-API-Key: <key>`.
-
-Notes:
-
-- A quick tunnel gets a new URL every time it restarts, so update the connector's server URL when that happens.
-- Rotate `MCP_API_KEY` after a demo: set a new value and restart the server. The old key stops working immediately.
-
-## How DevRev or AI could use this data
-
-TODO
+- **Data:** a single local SQLite file; free-tier hosting with an ephemeral disk would lose it on every restart.
+- **Cart:** kept in memory, so it resets on a full page refresh.
+- **Not built:** payments, email or notifications, and password reset.
+- **Sessions:** logout clears the cookie, but sessions aren't stored on the server, so a copied cookie works until it expires (8 hours).
+- **Rate limit:** the login limit is in memory and per process.
+- **Images:** product images are one placeholder per category.
