@@ -147,6 +147,7 @@ describe("frontend security rules", () => {
     ["localStorage", /localStorage/],
     ["sessionStorage", /sessionStorage/],
     ["VITE_ environment variables", /VITE_/],
+    ["the MCP key", /MCP_API_KEY|mcp_api_key/i],
   ])("source never uses %s", (_label, pattern) => {
     expect(files.length).toBeGreaterThan(20);
     const offenders = files.filter((file) => pattern.test(readFileSync(file, "utf-8")));

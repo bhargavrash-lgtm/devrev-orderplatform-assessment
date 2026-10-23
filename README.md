@@ -122,6 +122,21 @@ npm run build     # type-checks with tsc, then builds to frontend/dist
 
 `node scripts/e2e_customer.mjs` runs the customer flow against the running app; it needs `SEED_CUSTOMER_PASSWORD` in the environment.
 
+**Ops screens** (sign in as `ops@orderwave.demo` or `accounts@orderwave.demo`). These are denser working views: compact tables with sticky headers, and filters kept in the URL so a view can be shared or reloaded.
+
+| Screen | Path | What it's for |
+|---|---|---|
+| Dashboard | `/ops` | The day at a glance from `/api/insights`: orders by status, unresolved and open issues, offline and weak-signal orders, ratings, recurring issue categories (duplicates flagged), customers at risk with the backend's reasons, latest issues and activity. Every number links to the matching filtered list. |
+| Orders | `/ops/orders` | All orders, filtered by order number, customer, product, status, connection and date range, with sort and paging. |
+| Order | `/ops/orders/:id` | The customer card (links to the customer 360), status timeline with who changed what, and a status control. It only offers the next allowed step, and cancelling asks for confirmation first. Tabs: conversation (replies are labelled as the ops team), issues (report, and edit status, severity, category and Jira key), attachments (list and download), and the customer's feedback (read only). |
+| Issues | `/ops/issues` | The issue queue. By default it shows unresolved issues (open plus investigating), and it filters by status, severity, category, customer and Jira key. An editor drawer changes status, severity and category and sets or clears the Jira key, which must look like `SCRUM-24`. |
+| Customers | `/ops/customers` | The customer master, sorted by unresolved issues so accounts that need attention come first, with an "At risk only" switch, search, account health, negative interactions, orders, rating, lifetime value, renewal and owner. |
+| Customer 360 | `/ops/customers/:id` | Profile, contract fields, contacts and addresses; summary numbers; an account health panel; and tabs for overview, orders, the combined timeline (orders, issues, messages, feedback and interactions) and interactions. Interactions can be added: call, email, meeting, note, escalation or renewal, with a sentiment and an optional order. |
+
+The account health panel uses only what the API defines: the status on the customer record, the backend's at-risk list and reasons, the negative interaction count and the latest interaction's sentiment. It quotes the backend's at-risk rule (status `at_risk`, or at least 2 negative interactions in the last 90 days) rather than calculating a score of its own.
+
+`node scripts/e2e_ops.mjs` runs the ops flow against the running app; it needs `SEED_OPS_PASSWORD` and `SEED_CUSTOMER_PASSWORD` in the environment.
+
 Notes:
 
 - Design tokens (colours, radii, shadows, spacing, type scale) are defined once, in `frontend/tailwind.config.ts`.

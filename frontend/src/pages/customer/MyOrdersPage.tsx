@@ -9,16 +9,10 @@ import {
 import { cn } from "../../lib/cn";
 import { formatDate, formatInr, humanize } from "../../lib/format";
 import { useDebouncedValue } from "../../lib/hooks";
+import { itemsSummary } from "../../features/order/OrderSections";
 
 const PAGE_SIZE = 20;
 const STATUSES: OrderStatus[] = ["placed", "confirmed", "packed", "shipped", "delivered", "cancelled"];
-
-export function itemsSummary(order: OrderSummary): string {
-  const [first, ...rest] = order.items;
-  if (!first) return "No items";
-  const head = `${first.name} × ${first.quantity}`;
-  return rest.length ? `${head} + ${rest.length} more` : head;
-}
 
 const columns: Column<OrderSummary>[] = [
   {

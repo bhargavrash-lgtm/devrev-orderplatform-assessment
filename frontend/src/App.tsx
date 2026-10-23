@@ -14,9 +14,12 @@ import { OrderDetailPage } from "./pages/customer/OrderDetailPage";
 import { ShopPage } from "./pages/customer/ShopPage";
 import { LoginPage } from "./pages/LoginPage";
 import { NotFoundPage } from "./pages/NotFoundPage";
-import {
-  CustomerDetailPage, CustomersPage, DashboardPage, IssuesPage, OpsOrderDetailPage, OpsOrdersPage,
-} from "./pages/ops/OpsPages";
+import { CustomerDetailPage } from "./pages/ops/CustomerDetailPage";
+import { CustomersPage } from "./pages/ops/CustomersPage";
+import { DashboardPage } from "./pages/ops/DashboardPage";
+import { IssuesPage } from "./pages/ops/IssuesPage";
+import { OpsOrderDetailPage } from "./pages/ops/OpsOrderDetailPage";
+import { OpsOrdersPage } from "./pages/ops/OpsOrdersPage";
 
 export function createQueryClient(): QueryClient {
   return new QueryClient({

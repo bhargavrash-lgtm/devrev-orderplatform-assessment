@@ -89,7 +89,12 @@ export function customerRoutes(extra: Record<string, Handler> = {}): Record<stri
 
 function LocationProbe() {
   const location = useLocation();
-  return <div data-testid="location">{location.pathname}</div>;
+  return (
+    <>
+      <div data-testid="location">{location.pathname}</div>
+      <div data-testid="location-search">{location.search}</div>
+    </>
+  );
 }
 
 export function renderApp(path: string) {

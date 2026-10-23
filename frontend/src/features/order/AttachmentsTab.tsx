@@ -1,10 +1,10 @@
 import { useRef, useState, type DragEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Download, FileText, Paperclip, UploadCloud } from "lucide-react";
-import { attachmentUrl, orders } from "../../../api";
-import { Button, EmptyState, ErrorState, PlainText, Select, SkeletonRows, useToast } from "../../../components/ui";
-import { cn } from "../../../lib/cn";
-import { formatBytes, formatDateTime } from "../../../lib/format";
+import { attachmentUrl, orders } from "../../api";
+import { Button, EmptyState, ErrorState, PlainText, Select, SkeletonRows, useToast } from "../../components/ui";
+import { cn } from "../../lib/cn";
+import { formatBytes, formatDateTime } from "../../lib/format";
 
 // Mirrors records_api.py: MAX_UPLOAD_BYTES and UPLOAD_KINDS. The server also checks the file's
 // real content; these checks just catch obvious mistakes before uploading.
@@ -28,7 +28,7 @@ function typeLabel(contentType: string): string {
   return contentType;
 }
 
-export function AttachmentsTab({ orderId }: { orderId: number }) {
+export function AttachmentsTab({ orderId, canUpload = true }: { orderId: number; canUpload?: boolean }) {
   const queryClient = useQueryClient();
   const toast = useToast();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -37,7 +37,7 @@ export function AttachmentsTab({ orderId }: { orderId: number }) {
   const [error, setError] = useState<string | null>(null);
 
   const list = useQuery({ queryKey: ["order", orderId, "attachments"], queryFn: () => orders.attachments(orderId) });
-  const issues = useQuery({ queryKey: ["order", orderId, "issues"], queryFn: () => orders.issues(orderId) });
+  const issues = useQuery({ queryKey: ["order", orderId, "issues"], queryFn: () => orders.issues(orderId), enabled: canUpload });
   const upload = useMutation({
     mutationFn: (file: File) => orders.upload(orderId, file, issueId ? Number(issueId) : null),
     onSuccess: (attachment) => {
@@ -64,6 +64,7 @@ export function AttachmentsTab({ orderId }: { orderId: number }) {
 
   return (
     <div className="space-y-5">
+      {canUpload && (
       <div
         onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
         onDragLeave={() => setDragging(false)}
@@ -99,6 +100,7 @@ export function AttachmentsTab({ orderId }: { orderId: number }) {
         />
         {error && <p role="alert" className="mt-4 text-sm font-medium text-red-fg">{error}</p>}
       </div>
+      )}
 
       {list.isPending ? (
         <SkeletonRows rows={2} label="Loading attachments" />
@@ -106,7 +108,7 @@ export function AttachmentsTab({ orderId }: { orderId: number }) {
         <ErrorState title="Couldn't load attachments" message={list.error.message} onRetry={() => void list.refetch()} />
       ) : list.data.items.length === 0 ? (
         <EmptyState icon={<FileText className="h-6 w-6" />} title="No files attached"
-          description="Attach photos of damaged goods, delivery notes or invoices." className="py-8" />
+          description={canUpload ? "Attach photos of damaged goods, delivery notes or invoices." : "The customer hasn't attached any files to this order."} className="py-8" />
       ) : (
         <ul className="divide-y divide-line-soft rounded-card border border-line" aria-label="Attached files">
           {list.data.items.map((file) => (

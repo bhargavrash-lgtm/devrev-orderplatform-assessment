@@ -1,15 +1,15 @@
 import { useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Star } from "lucide-react";
-import { orders, type Order } from "../../../api";
+import { orders, type Order } from "../../api";
 import {
   Button, EmptyState, ErrorState, LoadingState, PlainText, Skeleton, StarRatingInput, Stars, Textarea,
-} from "../../../components/ui";
-import { formatDateTime, humanize } from "../../../lib/format";
+} from "../../components/ui";
+import { formatDateTime, humanize } from "../../lib/format";
 
 const MAX_COMMENT = 1000; // FeedbackIn.comment max_length
 
-export function FeedbackTab({ order }: { order: Order }) {
+export function FeedbackTab({ order, readOnly = false }: { order: Order; readOnly?: boolean }) {
   const queryClient = useQueryClient();
   const [rating, setRating] = useState(0);
   const [comment, setComment] = useState("");
@@ -29,7 +29,14 @@ export function FeedbackTab({ order }: { order: Order }) {
     onError: (err) => setError(err.message),
   });
 
-  if (order.order_status !== "delivered") {
+  if (readOnly && !order.has_feedback) {
+    return (
+      <EmptyState icon={<Star className="h-6 w-6" />} title="No feedback yet"
+        description={order.order_status === "delivered" ? "The customer hasn't rated this order." : "Customers can rate an order once it's delivered."} className="py-10" />
+    );
+  }
+
+  if (!readOnly && order.order_status !== "delivered") {
     return (
       <EmptyState icon={<Star className="h-6 w-6" />} title="Feedback opens after delivery"
         description={`This order is ${humanize(order.order_status).toLowerCase()}. Once it's delivered you can rate it here.`} className="py-10" />
@@ -45,13 +52,13 @@ export function FeedbackTab({ order }: { order: Order }) {
     }
     return (
       <div className="rounded-card border border-line p-5">
-        <p className="text-sm font-medium text-ink">Your feedback</p>
+        <p className="text-sm font-medium text-ink">{readOnly ? "Customer feedback" : "Your feedback"}</p>
         <div className="mt-2 flex items-center gap-2">
           <Stars value={feedback.data.rating} size="md" />
           <span className="text-sm text-ink-muted">{feedback.data.rating} of 5</span>
         </div>
         {feedback.data.comment && <PlainText text={feedback.data.comment} className="mt-3 text-sm text-ink" />}
-        <p className="mt-3 text-xs text-ink-subtle">Sent {formatDateTime(feedback.data.created_at)} · thank you</p>
+        <p className="mt-3 text-xs text-ink-subtle">Sent {formatDateTime(feedback.data.created_at)}{readOnly ? "" : " · thank you"}</p>
       </div>
     );
   }
