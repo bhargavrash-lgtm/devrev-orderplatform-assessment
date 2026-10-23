@@ -30,11 +30,26 @@ JSON over HTTP, served by the backend. Every route except `/api/health` and `/ap
 | `GET` | `/api/orders/{id}` | customer: own orders; ops: all | One order with items, address, status history, counts of messages, issues and attachments, and whether it has feedback |
 | `POST` | `/api/orders` | customer (for themselves); ops (with `customer_id`) | Place an order: checks stock, copies current prices, writes the first status event and reduces stock in one transaction |
 | `PUT` | `/api/orders/{id}` | ops: any allowed step; customer: cancel own order while `placed` | Change status along placed → confirmed → packed → shipped → delivered, one step at a time, or cancel from placed, confirmed or packed (cancelling puts the stock back) |
+| `GET` | `/api/orders/{id}/messages` | anyone who can see the order | Order conversation, oldest first; paged (default 50) |
+| `POST` | `/api/orders/{id}/messages` | anyone who can see the order | Post a message (1 to 2000 characters; stored as plain text) |
+| `GET` | `/api/orders/{id}/issues` | anyone who can see the order | Issues reported on the order |
+| `POST` | `/api/orders/{id}/issues` | anyone who can see the order | Report an issue (category, severity, description); only ops may set `jira_key` |
+| `GET` | `/api/issues` | customer: own issues; ops: all | Issues across orders. `status` = `unresolved` (default: open or investigating), `open`, `investigating`, `resolved`, `all`; filters `category`, `severity`, `customer` (ops only), `jira_key`, `order_id`; `sort` = `created_at`, `severity`, `status`; paged |
+| `PUT` | `/api/issues/{id}` | ops | Change an issue's status, severity, category or `jira_key` (format `ABC-123`, or null) |
+| `GET` | `/api/orders/{id}/feedback` | anyone who can see the order | The order's feedback, or 404 |
+| `POST` | `/api/orders/{id}/feedback` | customer, own delivered order | Rate the order 1 to 5 with an optional comment; once per order (409 after that) |
+| `GET` | `/api/products/{id}/reviews` | logged-in user | Product reviews with the average rating and count; paged |
+| `POST` | `/api/products/{id}/reviews` | customer | Review a product from one of their delivered orders that contains it; once per product per order (409 after that) |
+| `GET` | `/api/orders/{id}/attachments` | anyone who can see the order | Attachment metadata (no file contents) |
+| `POST` | `/api/orders/{id}/attachments` | anyone who can see the order | Upload a file (multipart `file`, optional `issue_id` on the same order). PNG, JPG, PDF or UTF-8 text, checked by content; up to 5 MB |
+| `GET` | `/api/attachments/{id}` | anyone who can see the order | Download as an attachment, with `X-Content-Type-Options: nosniff` |
 | `POST` | `/mcp` | holder of `MCP_API_KEY` | Read-only MCP server for an external AI platform (see below) |
 
 List responses look like `{"items": [...], "page": 1, "page_size": 20, "total": 25}`. `page_size` is at most 100.
 
-A customer asking for another customer's order gets the same 404 as for an order that does not exist. The customer rule is part of every order query's SQL, not a check applied afterwards.
+A customer asking for another customer's order gets the same 404 as for an order that does not exist. The same goes for that order's messages, issues, feedback and attachments. The customer rule is part of every query's SQL, not a check applied afterwards.
+
+**Attachments.** An upload's type comes from the file's content (magic bytes, or valid UTF-8 for text), and its extension has to match. Files are stored in `backend/uploads/` under random server-made names. The original filename is kept, with any path parts removed, only in the database, for display and downloads. The folder is never served directly: files are only downloaded through `/api/attachments/{id}`, after the same access check as the order.
 
 **Idempotency-Key.** `POST /api/orders` accepts an optional `Idempotency-Key` header (up to 100 characters). The first request with a key creates the order and returns 201. A repeat from the same user with the same key creates nothing and returns the original order with 200, so a client on a weak connection can safely retry. A unique index on `(placed_by, idempotency_key)` also stops two simultaneous requests with the same key, and stock is only reduced once.
 

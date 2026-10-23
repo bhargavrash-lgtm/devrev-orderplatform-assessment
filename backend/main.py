@@ -10,12 +10,15 @@ from auth import load_session_settings
 from auth import router as auth_router
 from db import init_db
 from orders_api import router as orders_router
+from records_api import MAX_UPLOAD_BYTES, ensure_uploads_dir
+from records_api import router as records_router
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.session = load_session_settings()  # refuses to start without a usable SESSION_SECRET
     init_db()
+    ensure_uploads_dir()
     async with AsyncExitStack() as stack:
         # /mcp is only served when MCP_API_KEY is set; otherwise it answers 404.
         app.state.mcp_app = None
@@ -28,6 +31,16 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="OrderWave Order Platform", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def limit_upload_size(request: Request, call_next):
+    """Refuse oversized uploads before the multipart body is read (the route checks again)."""
+    if request.method == "POST" and request.url.path.endswith("/attachments"):
+        length = request.headers.get("content-length", "")
+        if length.isdigit() and int(length) > MAX_UPLOAD_BYTES + 64 * 1024:  # room for multipart headers
+            return JSONResponse({"error": "File is larger than 5 MB"}, status_code=413)
+    return await call_next(request)
 
 
 # Every error response has the shape {"error": "message"}.
@@ -47,6 +60,7 @@ async def validation_error(request: Request, exc: RequestValidationError):
 
 app.include_router(auth_router)
 app.include_router(orders_router)
+app.include_router(records_router)
 app.add_route("/mcp", mcp_server.McpEndpoint(), include_in_schema=False)
 
 

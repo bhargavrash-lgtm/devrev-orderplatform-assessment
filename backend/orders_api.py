@@ -16,6 +16,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
 from pydantic import BaseModel, Field
 
+from api_common import ORDER_NOT_FOUND, Where, order_by, page_meta, placeholders, scope_to_user
 from auth import get_current_user
 from db import contains_pattern, get_db, iso_utc
 
@@ -30,47 +31,8 @@ CANCELLABLE = ("placed", "confirmed", "packed")
 PRODUCT_SORTS = {"name": "p.name", "unit_price": "p.unit_price", "stock": "p.stock"}
 ORDER_SORTS = {"created_at": "o.created_at", "total": "o.total", "id": "o.id"}
 
-ORDER_NOT_FOUND = "Order not found"
-
 Page = Query(1, ge=1)
 PageSize = Query(20, ge=1, le=MAX_PAGE_SIZE)
-
-
-class Where:
-    """WHERE clauses (constant SQL text) and their parameters."""
-
-    def __init__(self):
-        self.clauses: list[str] = []
-        self.params: list = []
-
-    def add(self, clause: str, *params) -> None:
-        self.clauses.append(clause)
-        self.params.extend(params)
-
-    @property
-    def sql(self) -> str:
-        return " WHERE " + " AND ".join(self.clauses) if self.clauses else ""
-
-
-def _placeholders(n: int) -> str:
-    return ",".join("?" * n)
-
-
-def _scope_to_user(where: Where, user) -> None:
-    """Customers only see their own customer's orders. Ops see everything."""
-    if user["role"] != "ops":
-        where.add("o.customer_id = ?", user["customer_id"])
-
-
-def _order_by(sort: str | None, allowed: dict[str, str], default: str, tiebreak: str) -> str:
-    """Turn 'field' or '-field' into ORDER BY text using only whitelisted columns."""
-    sort = (sort or default).strip()
-    descending = sort.startswith("-")
-    field = sort[1:] if descending else sort
-    if field not in allowed:
-        raise HTTPException(422, f"sort must be one of: {', '.join(allowed)} (prefix with - for descending)")
-    direction = "DESC" if descending else "ASC"
-    return f"{allowed[field]} {direction}, {tiebreak} {direction}"
 
 
 def _parse_date(name: str, value: str | None) -> date | None:
@@ -82,10 +44,6 @@ def _parse_date(name: str, value: str | None) -> date | None:
         return date.fromisoformat(value)
     except ValueError:
         raise HTTPException(422, f"{name} must be a date in YYYY-MM-DD format, for example 2026-10-01") from None
-
-
-def _page_meta(page: int, page_size: int, total: int) -> dict:
-    return {"page": page, "page_size": page_size, "total": total}
 
 
 # --- products ---------------------------------------------------------------------------
@@ -101,7 +59,7 @@ def list_products(
     user=Depends(get_current_user),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
-    order_by = _order_by(sort, PRODUCT_SORTS, "name", "p.id")
+    ordering = order_by(sort, PRODUCT_SORTS, "name", "p.id")
     where = Where()
     if q:
         pattern = contains_pattern(q.strip())
@@ -113,10 +71,10 @@ def list_products(
     total = conn.execute(f"SELECT COUNT(*) FROM products p{where.sql}", where.params).fetchone()[0]
     rows = conn.execute(
         "SELECT p.id, p.sku, p.name, p.category, p.description, p.unit_price, p.stock, p.image_url "
-        f"FROM products p{where.sql} ORDER BY {order_by} LIMIT ? OFFSET ?",
+        f"FROM products p{where.sql} ORDER BY {ordering} LIMIT ? OFFSET ?",
         [*where.params, page_size, (page - 1) * page_size],
     ).fetchall()
-    return {"items": [dict(r) for r in rows], **_page_meta(page, page_size, total)}
+    return {"items": [dict(r) for r in rows], **page_meta(page, page_size, total)}
 
 
 # --- reading orders ---------------------------------------------------------------------
@@ -137,7 +95,7 @@ def _items_by_order(conn: sqlite3.Connection, order_ids: list[int]) -> dict[int,
     for r in conn.execute(
         "SELECT oi.order_id, oi.product_id, p.sku, p.name, oi.quantity, oi.unit_price "
         "FROM order_items oi JOIN products p ON p.id = oi.product_id "
-        f"WHERE oi.order_id IN ({_placeholders(len(order_ids))}) ORDER BY oi.order_id, oi.id",
+        f"WHERE oi.order_id IN ({placeholders(len(order_ids))}) ORDER BY oi.order_id, oi.id",
         order_ids,
     ):
         items[r["order_id"]].append({"product_id": r["product_id"], "sku": r["sku"], "name": r["name"],
@@ -164,7 +122,7 @@ def load_order(conn: sqlite3.Connection, order_id: int, user) -> dict | None:
     """The full order as the user may see it, or None (missing or not theirs)."""
     where = Where()
     where.add("o.id = ?", order_id)
-    _scope_to_user(where, user)
+    scope_to_user(where, user)
     row = conn.execute(
         f"SELECT {ORDER_COLUMNS}, a.label, a.line1, a.city, a.state, a.pincode, "
         "(SELECT COUNT(*) FROM order_messages m WHERE m.order_id = o.id) AS message_count, "
@@ -209,13 +167,13 @@ def list_orders(
     user=Depends(get_current_user),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
-    order_by = _order_by(sort, ORDER_SORTS, "-created_at", "o.id")
+    ordering = order_by(sort, ORDER_SORTS, "-created_at", "o.id")
     start, end = _parse_date("from", from_), _parse_date("to", to)
     if start and end and start > end:
         raise HTTPException(422, "from must be on or before to")
 
     where = Where()
-    _scope_to_user(where, user)
+    scope_to_user(where, user)
     if id is not None:
         where.add("o.id = ?", id)
     if customer and user["role"] == "ops":  # customers are already scoped to themselves
@@ -230,7 +188,7 @@ def list_orders(
         unknown = [s for s in statuses if s not in ORDER_STATUSES]
         if unknown or not statuses:
             raise HTTPException(422, f"status must be one or more of: {', '.join(ORDER_STATUSES)} (comma-separated)")
-        where.add(f"o.order_status IN ({_placeholders(len(statuses))})", *statuses)
+        where.add(f"o.order_status IN ({placeholders(len(statuses))})", *statuses)
     if client_network:
         where.add("o.client_network = ?", client_network)
     if start:
@@ -240,11 +198,11 @@ def list_orders(
 
     total = conn.execute(f"SELECT COUNT(*) {ORDER_FROM}{where.sql}", where.params).fetchone()[0]
     rows = conn.execute(
-        f"SELECT {ORDER_COLUMNS} {ORDER_FROM}{where.sql} ORDER BY {order_by} LIMIT ? OFFSET ?",
+        f"SELECT {ORDER_COLUMNS} {ORDER_FROM}{where.sql} ORDER BY {ordering} LIMIT ? OFFSET ?",
         [*where.params, page_size, (page - 1) * page_size],
     ).fetchall()
     items = _items_by_order(conn, [r["id"] for r in rows])
-    return {"items": [_order_json(r, items[r["id"]]) for r in rows], **_page_meta(page, page_size, total)}
+    return {"items": [_order_json(r, items[r["id"]]) for r in rows], **page_meta(page, page_size, total)}
 
 
 @router.get("/orders/{order_id}")
@@ -330,7 +288,7 @@ def create_order(
         customer_id = _order_customer_id(conn, user, body.customer_id)
         address_id = _order_address_id(conn, customer_id, body.address_id)
         products = {r["id"]: r for r in conn.execute(
-            f"SELECT id, sku, unit_price, stock FROM products WHERE id IN ({_placeholders(len(product_ids))})",
+            f"SELECT id, sku, unit_price, stock FROM products WHERE id IN ({placeholders(len(product_ids))})",
             product_ids)}
         unknown = [pid for pid in product_ids if pid not in products]
         if unknown:
@@ -393,7 +351,7 @@ def update_order_status(
     try:
         where = Where()
         where.add("o.id = ?", order_id)
-        _scope_to_user(where, user)
+        scope_to_user(where, user)
         row = conn.execute(f"SELECT o.order_status FROM orders o{where.sql}", where.params).fetchone()
         if row is None:
             raise HTTPException(404, ORDER_NOT_FOUND)
