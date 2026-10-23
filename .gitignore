@@ -21,3 +21,10 @@ dist/
 
 # OS
 .DS_Store
+
+# Local run state, logs and tunnels
+.run/
+*.log
+.cloudflared/
+cloudflared*.log
+*.pid
