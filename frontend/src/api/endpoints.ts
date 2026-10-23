@@ -44,11 +44,12 @@ export const orders = {
   list: (query: OrderQuery = {}) => request<Page<OrderSummary>>("/api/orders", { query: query as Query }),
   get: (id: number) => request<Order>(`/api/orders/${id}`),
   /** Pass the same idempotencyKey when retrying, so a retry never creates a second order. */
-  create: (body: OrderCreate, idempotencyKey?: string) =>
+  create: (body: OrderCreate, idempotencyKey?: string, signal?: AbortSignal) =>
     request<Order>("/api/orders", {
       method: "POST",
       json: body,
       headers: idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined,
+      signal,
     }),
   setStatus: (id: number, orderStatus: OrderStatus) =>
     request<Order>(`/api/orders/${id}`, { method: "PUT", json: { order_status: orderStatus } }),

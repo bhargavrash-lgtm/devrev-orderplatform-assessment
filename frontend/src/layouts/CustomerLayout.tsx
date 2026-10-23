@@ -1,13 +1,16 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { LogOut, Search, ShoppingBag, Store } from "lucide-react";
-import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
+import { LogOut, Search, ShoppingBag } from "lucide-react";
+import { Link, NavLink, Outlet, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { customers } from "../api";
 import { useAuth, useCurrentUser } from "../auth/AuthContext";
+import { CartProvider, useCart } from "../cart/CartContext";
+import { CartDrawer } from "../cart/CartDrawer";
 import { Logo } from "../components/brand/Logo";
 import { ErrorBoundary } from "../components/ErrorBoundary";
-import { Avatar, Drawer, EmptyState, IconButton, Menu, Skeleton } from "../components/ui";
+import { Avatar, IconButton, Menu, Skeleton } from "../components/ui";
 import { cn } from "../lib/cn";
+import { useDebouncedValue } from "../lib/hooks";
 
 const NAV = [
   { to: "/shop", label: "Shop" },
@@ -21,13 +24,75 @@ function navClass({ isActive }: { isActive: boolean }) {
   );
 }
 
-export function CustomerLayout() {
+/** Top-bar search: typing (debounced) opens /shop?q=..., keeping the shop's other filters. */
+function ProductSearch() {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const [params] = useSearchParams();
+  const onShop = location.pathname === "/shop";
+  const urlTerm = onShop ? params.get("q") ?? "" : "";
+  const [term, setTerm] = useState(urlTerm);
+  const typed = useRef(false);
+  const debounced = useDebouncedValue(term, 300);
+
+  // Follow the URL (back button, "clear filters") unless the user is mid-typing.
+  useEffect(() => {
+    if (!typed.current) setTerm(urlTerm);
+  }, [urlTerm]);
+
+  useEffect(() => {
+    if (!typed.current) return;
+    typed.current = false;
+    const next = new URLSearchParams(onShop ? params : undefined);
+    if (debounced.trim()) next.set("q", debounced.trim());
+    else next.delete("q");
+    next.delete("page");
+    navigate({ pathname: "/shop", search: next.toString() }, { replace: onShop });
+    // Deliberately runs only when the debounced term changes, not on every URL change.
+  }, [debounced]);
+
+  return (
+    <form role="search" aria-label="Products" className="ml-auto hidden max-w-xs flex-1 sm:block" onSubmit={(e) => e.preventDefault()}>
+      <label htmlFor="product-search" className="sr-only">Search products</label>
+      <div className="relative">
+        <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-faint" aria-hidden="true" />
+        <input
+          id="product-search"
+          type="search"
+          placeholder="Search products"
+          value={term}
+          maxLength={100}
+          onChange={(e) => { typed.current = true; setTerm(e.target.value); }}
+          className="h-9 w-full rounded-full border border-line bg-page pl-9 pr-3 text-sm text-ink placeholder:text-ink-faint outline-none transition-colors focus-visible:border-accent-500 focus-visible:bg-white focus-visible:shadow-focus"
+        />
+      </div>
+    </form>
+  );
+}
+
+function CartButton() {
+  const cart = useCart();
+  return (
+    <IconButton label={`Cart, ${cart.count} ${cart.count === 1 ? "item" : "items"}`} onClick={cart.open}>
+      <ShoppingBag className="h-5 w-5" aria-hidden="true" />
+      <span
+        aria-hidden="true"
+        className={cn(
+          "absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-2xs font-semibold",
+          cart.count > 0 ? "bg-accent-600 text-white" : "bg-line text-ink-subtle",
+        )}
+      >
+        {cart.count > 99 ? "99+" : cart.count}
+      </span>
+    </IconButton>
+  );
+}
+
+function CustomerShell() {
   const user = useCurrentUser();
   const { logout } = useAuth();
   const location = useLocation();
-  const [cartOpen, setCartOpen] = useState(false);
   const company = useQuery({ queryKey: ["customer", "mine"], queryFn: customers.mine, staleTime: 5 * 60_000 });
-  const cartCount = 0; // the cart arrives in the next build step
 
   return (
     <div className="min-h-screen">
@@ -42,30 +107,9 @@ export function CustomerLayout() {
           <nav aria-label="Main" className="hidden items-center gap-1 md:flex">
             {NAV.map((item) => <NavLink key={item.to} to={item.to} className={navClass}>{item.label}</NavLink>)}
           </nav>
-
-          <form role="search" aria-label="Products" className="ml-auto hidden max-w-xs flex-1 sm:block" onSubmit={(e) => e.preventDefault()}>
-            <label htmlFor="product-search" className="sr-only">Search products</label>
-            <div className="relative">
-              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-faint" aria-hidden="true" />
-              <input
-                id="product-search"
-                type="search"
-                placeholder="Search products"
-                className="h-9 w-full rounded-full border border-line bg-page pl-9 pr-3 text-sm text-ink placeholder:text-ink-faint outline-none transition-colors focus-visible:border-accent-500 focus-visible:bg-white focus-visible:shadow-focus"
-              />
-            </div>
-          </form>
-
+          <ProductSearch />
           <div className="ml-auto flex items-center gap-2 sm:ml-0">
-            <IconButton label={`Cart, ${cartCount} items`} onClick={() => setCartOpen(true)}>
-              <ShoppingBag className="h-5 w-5" aria-hidden="true" />
-              <span
-                aria-hidden="true"
-                className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-accent-600 px-1 text-2xs font-semibold text-white"
-              >
-                {cartCount}
-              </span>
-            </IconButton>
+            <CartButton />
             <Menu
               label="Account menu"
               trigger={
@@ -98,23 +142,16 @@ export function CustomerLayout() {
           <Outlet />
         </ErrorBoundary>
       </main>
-
-      <Drawer open={cartOpen} onClose={() => setCartOpen(false)} title="Your cart" description={`${cartCount} items`}>
-        <EmptyState
-          icon={<Store className="h-6 w-6" />}
-          title="Your cart is empty"
-          description="Products you add from the shop will show up here, ready to order."
-          action={
-            <Link
-              to="/shop"
-              onClick={() => setCartOpen(false)}
-              className="focus-ring inline-flex h-9 items-center rounded bg-accent-600 px-4 text-sm font-medium text-white hover:bg-accent-700"
-            >
-              Browse the shop
-            </Link>
-          }
-        />
-      </Drawer>
+      <CartDrawer />
     </div>
+  );
+}
+
+/** The cart is shared by every customer page, and only exists while the app is open. */
+export function CustomerLayout() {
+  return (
+    <CartProvider>
+      <CustomerShell />
+    </CartProvider>
   );
 }

@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import type { IssueSeverity, OrderStatus, Sentiment } from "../../api/types";
+import type { IssueSeverity, IssueStatus, OrderStatus, Sentiment } from "../../api/types";
 import { cn } from "../../lib/cn";
 import { humanize } from "../../lib/format";
 
@@ -28,12 +28,15 @@ export const SEVERITY_TONE: Record<IssueSeverity, Tone> = { low: "neutral", medi
 
 export const SENTIMENT_TONE: Record<Sentiment, Tone> = { positive: "green", neutral: "neutral", negative: "red" };
 
-const kindLabel = { status: "Status", severity: "Severity", sentiment: "Sentiment" } as const;
+export const ISSUE_STATUS_TONE: Record<IssueStatus, Tone> = { open: "amber", investigating: "blue", resolved: "green" };
+
+const kindLabel = { status: "Status", severity: "Severity", sentiment: "Sentiment", issueStatus: "Issue status" } as const;
 
 type BadgeProps =
   | { kind: "status"; value: OrderStatus; className?: string }
   | { kind: "severity"; value: IssueSeverity; className?: string }
   | { kind: "sentiment"; value: Sentiment; className?: string }
+  | { kind: "issueStatus"; value: IssueStatus; className?: string }
   | { kind?: undefined; tone?: Tone; children: ReactNode; dot?: boolean; className?: string };
 
 /**
@@ -54,6 +57,9 @@ export function Badge(props: BadgeProps) {
     content = humanize(props.value);
   } else if (props.kind === "sentiment") {
     tone = SENTIMENT_TONE[props.value];
+    content = humanize(props.value);
+  } else if (props.kind === "issueStatus") {
+    tone = ISSUE_STATUS_TONE[props.value];
     content = humanize(props.value);
   } else {
     tone = props.tone ?? "neutral";

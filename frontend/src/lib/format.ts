@@ -26,3 +26,16 @@ export function initials(name: string): string {
   const letters = words.length > 1 ? [words[0]![0], words[words.length - 1]![0]] : [words[0]?.[0], words[0]?.[1]];
   return letters.filter(Boolean).join("").toUpperCase();
 }
+
+export function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(bytes < 10 * 1024 ? 1 : 0)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+const plainNumber = new Intl.NumberFormat("en-IN");
+
+/** Indian digit grouping without a currency sign, e.g. 1,20,000. */
+export function formatNumber(value: number): string {
+  return plainNumber.format(value);
+}

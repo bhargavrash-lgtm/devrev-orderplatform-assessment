@@ -8,7 +8,10 @@ import { ErrorBoundary } from "./components/ErrorBoundary";
 import { ToastProvider } from "./components/ui";
 import { CustomerLayout } from "./layouts/CustomerLayout";
 import { OpsLayout } from "./layouts/OpsLayout";
-import { MyOrdersPage, OrderDetailPage, ShopPage } from "./pages/customer/CustomerPages";
+import { CheckoutPage } from "./pages/customer/CheckoutPage";
+import { MyOrdersPage } from "./pages/customer/MyOrdersPage";
+import { OrderDetailPage } from "./pages/customer/OrderDetailPage";
+import { ShopPage } from "./pages/customer/ShopPage";
 import { LoginPage } from "./pages/LoginPage";
 import { NotFoundPage } from "./pages/NotFoundPage";
 import {
@@ -51,6 +54,7 @@ export function AppRoutes() {
         <Route element={<RequireRole role="customer" />}>
           <Route element={<CustomerLayout />}>
             <Route path="/shop" element={<ShopPage />} />
+            <Route path="/checkout" element={<CheckoutPage />} />
             <Route path="/orders" element={<MyOrdersPage />} />
             <Route path="/orders/:id" element={<OrderDetailPage />} />
           </Route>

@@ -90,6 +90,26 @@ describe("Modal", () => {
   });
 });
 
+describe("Modal typing", () => {
+  function TypingHarness() {
+    const [value, setValue] = useState("");
+    // An inline onClose and a parent that re-renders on every keystroke, like real forms.
+    return (
+      <Modal open onClose={() => setValue("")} title="Form">
+        <button type="button">First</button>
+        <label>Name<input value={value} onChange={(e) => setValue(e.target.value)} /></label>
+      </Modal>
+    );
+  }
+
+  it("keeps focus in the field while typing", async () => {
+    const user = userEvent.setup();
+    render(<TypingHarness />);
+    await user.type(screen.getByLabelText("Name"), "Three bags split open.");
+    expect(screen.getByLabelText("Name")).toHaveValue("Three bags split open.");
+  });
+});
+
 describe("Tabs", () => {
   function Harness() {
     const [value, setValue] = useState("a");

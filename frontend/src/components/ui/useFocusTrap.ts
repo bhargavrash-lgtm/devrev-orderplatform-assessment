@@ -1,4 +1,4 @@
-import { useEffect, type RefObject } from "react";
+import { useEffect, useRef, type RefObject } from "react";
 
 const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -8,6 +8,11 @@ const FOCUSABLE =
  * stops the page behind from scrolling, and returns focus to where it was on close.
  */
 export function useFocusTrap(ref: RefObject<HTMLElement | null>, active: boolean, onEscape: () => void): void {
+  // Callers usually pass a new function each render; keep the latest in a ref so the trap
+  // only re-runs when it opens or closes (re-running would move focus on every keystroke).
+  const escapeRef = useRef(onEscape);
+  escapeRef.current = onEscape;
+
   useEffect(() => {
     if (!active) return;
     const container = ref.current;
@@ -20,7 +25,7 @@ export function useFocusTrap(ref: RefObject<HTMLElement | null>, active: boolean
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.stopPropagation();
-        onEscape();
+        escapeRef.current();
         return;
       }
       if (event.key !== "Tab") return;
@@ -48,5 +53,5 @@ export function useFocusTrap(ref: RefObject<HTMLElement | null>, active: boolean
       document.body.style.overflow = overflow;
       previouslyFocused?.focus?.();
     };
-  }, [ref, active, onEscape]);
+  }, [ref, active]);
 }

@@ -1,6 +1,7 @@
-export { Badge, SENTIMENT_TONE, SEVERITY_TONE, STATUS_TONE, type Tone } from "./Badge";
+export { Badge, ISSUE_STATUS_TONE, SENTIMENT_TONE, SEVERITY_TONE, STATUS_TONE, type Tone } from "./Badge";
 export { Button, IconButton, type ButtonProps } from "./Button";
 export { Card, PageHeader, SectionCard } from "./Card";
+export { QuantityStepper, StarRatingInput, Stars } from "./Controls";
 export { Drawer, Modal } from "./Dialog";
 export { Avatar, PlainText, StatCard, Timeline, type TimelineStep } from "./Display";
 export { Input, Select, Textarea } from "./Field";

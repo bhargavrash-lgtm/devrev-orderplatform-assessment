@@ -77,6 +77,9 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
     });
   } catch (cause) {
     if (cause instanceof DOMException && cause.name === "AbortError") throw cause;
+    if (cause instanceof DOMException && cause.name === "TimeoutError") {
+      throw new ApiError("The server took too long to answer. Please try again.", 0);
+    }
     throw new ApiError("Can't reach the server. Check your connection and try again.", 0);
   }
 

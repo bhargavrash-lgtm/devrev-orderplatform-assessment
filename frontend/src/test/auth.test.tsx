@@ -1,7 +1,7 @@
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
-import { customerUser, mockApi, NOT_LOGGED_IN, opsUser, ownCustomer, renderApp } from "./utils";
+import { customerRoutes, customerUser, makeOrder, mockApi, NOT_LOGGED_IN, opsUser, renderApp } from "./utils";
 
 // Test-only value, never a real account password.
 const TYPED_PASSWORD = "typed-in-test";
@@ -18,9 +18,9 @@ const location = () => screen.getByTestId("location").textContent;
 describe("login", () => {
   it("sends a customer to /shop after signing in", async () => {
     const fetchMock = mockApi({
+      ...customerRoutes(),
       "GET /api/auth/me": NOT_LOGGED_IN,
       "POST /api/auth/login": { status: 200, body: customerUser },
-      "GET /api/customer": { status: 200, body: ownCustomer },
     });
     renderApp("/login");
     await signIn(customerUser.email);
@@ -88,10 +88,7 @@ describe("route guards", () => {
   });
 
   it.each(["/ops", "/ops/customers", "/ops/customers/1", "/ops/anything"])("sends a customer visiting %s to /shop", async (path) => {
-    mockApi({
-      "GET /api/auth/me": { status: 200, body: customerUser },
-      "GET /api/customer": { status: 200, body: ownCustomer },
-    });
+    mockApi(customerRoutes());
     renderApp(path);
     await waitFor(() => expect(location()).toBe("/shop"));
   });
@@ -103,10 +100,10 @@ describe("route guards", () => {
   });
 
   it("lets a customer open their own pages", async () => {
-    mockApi({
-      "GET /api/auth/me": { status: 200, body: customerUser },
-      "GET /api/customer": { status: 200, body: ownCustomer },
-    });
+    mockApi(customerRoutes({
+      "GET /api/orders/12": { status: 200, body: makeOrder({ id: 12 }) },
+      "GET /api/orders/12/messages": { status: 200, body: { items: [], page: 1, page_size: 100, total: 0 } },
+    }));
     renderApp("/orders/12");
     expect(await screen.findByRole("heading", { name: "Order #12" })).toBeInTheDocument();
     expect(location()).toBe("/orders/12");
@@ -119,22 +116,17 @@ describe("route guards", () => {
   });
 
   it("returns to /login when any API call answers 401", async () => {
-    mockApi({
-      "GET /api/auth/me": { status: 200, body: customerUser },
+    mockApi(customerRoutes({
       // The session expired between loading the app and the next request.
       "GET /api/customer": { status: 401, body: { error: "Not authenticated" } },
-    });
+    }));
     renderApp("/shop");
     await waitFor(() => expect(location()).toBe("/login"));
     expect(await screen.findByText("Your session has ended")).toBeInTheDocument();
   });
 
   it("signs out from the customer menu", async () => {
-    mockApi({
-      "GET /api/auth/me": { status: 200, body: customerUser },
-      "GET /api/customer": { status: 200, body: ownCustomer },
-      "POST /api/auth/logout": { status: 200, body: { ok: true } },
-    });
+    mockApi(customerRoutes({ "POST /api/auth/logout": { status: 200, body: { ok: true } } }));
     renderApp("/shop");
     const user = userEvent.setup();
     await user.click(await screen.findByRole("button", { name: "Account menu" }));

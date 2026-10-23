@@ -100,6 +100,28 @@ npm test          # Vitest + React Testing Library
 npm run build     # type-checks with tsc, then builds to frontend/dist
 ```
 
+**Customer screens** (sign in as `sundaram@orderwave.demo` or `greenfield@orderwave.demo`):
+
+- **Shop** (`/shop`): the catalogue, with category chips, an "in stock only" switch, sorting (name, price or stock), and the top-bar search (debounced, using the products API's `q` filter). Each card shows the price in INR and the stock. Clicking a card opens the product: a larger image, description, price, add to cart, and reviews with average, count, reviewer company and date. A customer can review a product from one of their delivered orders that contains it.
+- **Cart**: a drawer from the top-bar cart button, with a live item count, a quantity stepper (1 up to the stock, at most 1000 per line as the API allows), remove, and subtotal. It lives in memory only, so it resets on a full page refresh, by design.
+- **Checkout** (`/checkout`): the order summary, a delivery address picker from the customer's addresses, an optional delivery note, and "Connection when ordering". That last one is saved as the order's `client_network`; it simulates a field rep ordering on poor coverage, which is how the duplicate orders in the demo data happen. Placing the order shows a confirmation with the order id, items and total.
+- **My orders** (`/orders`): a table (cards on phones) with filters for order number, status and date range, sent to the orders API as `id`, `status`, `from` and `to`; paged.
+- **Order** (`/orders/:id`): status, total, delivery address and note, a progress timeline from the order's status history, the items, and tabs:
+  - Conversation: a message thread with support; Ctrl + Enter sends.
+  - Issues: issues with severity, status and any Jira key, plus a "Report an issue" form.
+  - Attachments: drag and drop or pick a file. PNG, JPG, PDF or text up to 5 MB, the same limits the server checks; downloads go through the API.
+  - Feedback: a 1 to 5 star rating and comment, once per delivered order.
+
+  Someone else's order shows the same not-found page as a missing one.
+
+**How the Idempotency-Key works.** Each checkout attempt gets one key from `crypto.randomUUID()`, kept in the checkout page's state and sent as the `Idempotency-Key` header.
+
+- **Retries reuse it.** If the request fails or times out (30 seconds), "Try again" sends the same key. If the first request did reach the server, the API returns that order (200) instead of creating a second one.
+- **A double click sends one request.** The button is disabled, and a guard blocks a second submit while one is in flight.
+- **A new key** is made only after a successful order, or when the cart contents change.
+
+`node scripts/e2e_customer.mjs` runs the customer flow against the running app; it needs `SEED_CUSTOMER_PASSWORD` in the environment.
+
 Notes:
 
 - Design tokens (colours, radii, shadows, spacing, type scale) are defined once, in `frontend/tailwind.config.ts`.
