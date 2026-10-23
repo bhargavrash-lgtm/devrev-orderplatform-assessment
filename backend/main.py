@@ -7,6 +7,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 import mcp_server
+from frontend_static import frontend_response, log_startup_state
 from auth import load_session_settings
 from auth import router as auth_router
 from customers_api import router as customers_router
@@ -21,6 +22,7 @@ async def lifespan(app: FastAPI):
     app.state.session = load_session_settings()  # refuses to start without a usable SESSION_SECRET
     init_db()
     ensure_uploads_dir()
+    log_startup_state()
     async with AsyncExitStack() as stack:
         # /mcp is only served when MCP_API_KEY is set; otherwise it answers 404.
         app.state.mcp_app = None
@@ -48,6 +50,9 @@ async def limit_upload_size(request: Request, call_next):
 # Every error response has the shape {"error": "message"}.
 @app.exception_handler(StarletteHTTPException)
 async def http_error(request: Request, exc: StarletteHTTPException):
+    # Single-port mode: an unmatched browser route gets the built frontend instead of a 404.
+    if exc.status_code == 404 and (page := frontend_response(request)) is not None:
+        return page
     return JSONResponse({"error": str(exc.detail)}, status_code=exc.status_code, headers=exc.headers)
 
 

@@ -19,6 +19,8 @@ if len(os.environ.get("SESSION_SECRET", "")) < auth.MIN_SECRET_LENGTH:
     os.environ["SESSION_SECRET"] = secrets.token_hex(32)
 if len(os.environ.get("MCP_API_KEY", "")) < 32:
     os.environ["MCP_API_KEY"] = secrets.token_hex(32)
+# Tests that want single-port mode turn it on themselves.
+os.environ["SERVE_FRONTEND"] = "0"
 
 
 @pytest.fixture
