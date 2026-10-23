@@ -13,7 +13,9 @@ import sqlite3
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
+from db import contains_pattern as _contains
 from db import db_path
+from db import iso_utc as iso
 
 DEFAULT_LIMIT = 25
 MAX_LIMIT = 100
@@ -72,22 +74,9 @@ def connect_readonly(path: str | Path | None = None) -> sqlite3.Connection:
     return conn
 
 
-def iso(ts: str | None) -> str | None:
-    """'YYYY-MM-DD HH:MM:SS' (UTC, as stored) -> 'YYYY-MM-DDTHH:MM:SSZ'. Dates pass through."""
-    if ts is None or len(ts) <= 10:
-        return ts
-    return ts.replace(" ", "T") + "Z"
-
-
 def _page(limit: int | None, offset: int | None) -> tuple[int, int]:
     limit = DEFAULT_LIMIT if limit is None else max(1, min(int(limit), MAX_LIMIT))
     return limit, max(0, int(offset or 0))
-
-
-def _contains(text: str) -> str:
-    """LIKE pattern for 'contains text', with %, _ and the escape char escaped (use ESCAPE '\\')."""
-    escaped = text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-    return f"%{escaped}%"
 
 
 def _date_bound(value: str, *, end: bool) -> str:

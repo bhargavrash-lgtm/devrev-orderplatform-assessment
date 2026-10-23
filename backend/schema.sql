@@ -71,6 +71,7 @@ CREATE TABLE IF NOT EXISTS orders (
   delivery_note TEXT,
   -- Connection the app had when the order was placed; 'offline_sync' = queued offline, synced later.
   client_network TEXT NOT NULL DEFAULT 'good' CHECK (client_network IN ('good','weak','offline_sync')),
+  idempotency_key TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -159,6 +160,9 @@ CREATE TABLE IF NOT EXISTS product_reviews (
 
 CREATE INDEX IF NOT EXISTS idx_orders_customer ON orders(customer_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(order_status);
+-- A retried POST /api/orders with the same Idempotency-Key from the same user cannot create a second order.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_idempotency ON orders(placed_by, idempotency_key)
+  WHERE idempotency_key IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_items_order ON order_items(order_id);
 CREATE INDEX IF NOT EXISTS idx_messages_order ON order_messages(order_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_issues_order ON issues(order_id);

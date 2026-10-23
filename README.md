@@ -17,7 +17,28 @@ SQLite, defined in [`backend/schema.sql`](backend/schema.sql).
 
 ## API
 
-TODO
+JSON over HTTP, served by the backend. Every route except `/api/health` and `/api/auth/login` needs a session cookie from logging in. Errors always have the shape `{"error": "message"}`.
+
+| Method | Path | Who can call it | Purpose |
+|---|---|---|---|
+| `GET` | `/api/health` | anyone | Health check |
+| `POST` | `/api/auth/login` | anyone | Log in with email and password; sets the session cookie |
+| `POST` | `/api/auth/logout` | anyone | Clear the session cookie |
+| `GET` | `/api/auth/me` | logged-in user | The current user |
+| `GET` | `/api/products` | logged-in user | Catalogue. Filters `q` (name or SKU), `category`, `in_stock`; `sort` = `name`, `unit_price`, `stock` (prefix `-` for descending); paged |
+| `GET` | `/api/orders` | customer: own orders; ops: all | Order list with items. Filters `id`, `customer` (ops only), `product`, `status` (comma-separated), `client_network`, `from` / `to` (YYYY-MM-DD, inclusive); `sort` = `created_at`, `total`, `id`; paged |
+| `GET` | `/api/orders/{id}` | customer: own orders; ops: all | One order with items, address, status history, counts of messages, issues and attachments, and whether it has feedback |
+| `POST` | `/api/orders` | customer (for themselves); ops (with `customer_id`) | Place an order: checks stock, copies current prices, writes the first status event and reduces stock in one transaction |
+| `PUT` | `/api/orders/{id}` | ops: any allowed step; customer: cancel own order while `placed` | Change status along placed → confirmed → packed → shipped → delivered, one step at a time, or cancel from placed, confirmed or packed (cancelling puts the stock back) |
+| `POST` | `/mcp` | holder of `MCP_API_KEY` | Read-only MCP server for an external AI platform (see below) |
+
+List responses look like `{"items": [...], "page": 1, "page_size": 20, "total": 25}`. `page_size` is at most 100.
+
+A customer asking for another customer's order gets the same 404 as for an order that does not exist. The customer rule is part of every order query's SQL, not a check applied afterwards.
+
+**Idempotency-Key.** `POST /api/orders` accepts an optional `Idempotency-Key` header (up to 100 characters). The first request with a key creates the order and returns 201. A repeat from the same user with the same key creates nothing and returns the original order with 200, so a client on a weak connection can safely retry. A unique index on `(placed_by, idempotency_key)` also stops two simultaneous requests with the same key, and stock is only reduced once.
+
+**WAL mode.** The database runs in SQLite's write-ahead-log mode, switched on at startup. Readers, including the MCP server's read-only connection, see the last committed data while an order is being written, instead of waiting for the write to finish.
 
 ## Run locally
 

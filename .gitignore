@@ -5,6 +5,9 @@
 
 # Data
 *.db
+*.db-wal
+*.db-shm
+*.db-journal
 backend/uploads/
 
 # Python

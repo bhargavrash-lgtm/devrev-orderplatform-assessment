@@ -33,9 +33,27 @@ def get_db():
 
 
 def init_db(path: str | Path | None = None) -> None:
-    """Create any missing tables and indexes. Safe to call on every startup."""
+    """Create any missing tables, indexes and views, and switch to WAL. Safe to call on every startup.
+
+    WAL lets readers (including the read-only MCP connection) see the last committed data
+    while a write is in progress, instead of waiting for it. The setting is stored in the file.
+    """
     conn = connect(path)
     try:
+        conn.execute("PRAGMA journal_mode = WAL")
         conn.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
     finally:
         conn.close()
+
+
+def contains_pattern(text: str) -> str:
+    """LIKE pattern for 'contains text' with %, _ and \\ escaped. Use with ESCAPE '\\'."""
+    escaped = text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
+def iso_utc(ts: str | None) -> str | None:
+    """'YYYY-MM-DD HH:MM:SS' (UTC, as stored) -> 'YYYY-MM-DDTHH:MM:SSZ'. Dates pass through."""
+    if ts is None or len(ts) <= 10:
+        return ts
+    return ts.replace(" ", "T") + "Z"

@@ -9,6 +9,7 @@ import mcp_server
 from auth import load_session_settings
 from auth import router as auth_router
 from db import init_db
+from orders_api import router as orders_router
 
 
 @asynccontextmanager
@@ -45,6 +46,7 @@ async def validation_error(request: Request, exc: RequestValidationError):
 
 
 app.include_router(auth_router)
+app.include_router(orders_router)
 app.add_route("/mcp", mcp_server.McpEndpoint(), include_in_schema=False)
 
 
