@@ -8,6 +8,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 import mcp_server
 from auth import load_session_settings
 from auth import router as auth_router
+from customers_api import router as customers_router
 from db import init_db
 from orders_api import router as orders_router
 from records_api import MAX_UPLOAD_BYTES, ensure_uploads_dir
@@ -61,6 +62,7 @@ async def validation_error(request: Request, exc: RequestValidationError):
 app.include_router(auth_router)
 app.include_router(orders_router)
 app.include_router(records_router)
+app.include_router(customers_router)
 app.add_route("/mcp", mcp_server.McpEndpoint(), include_in_schema=False)
 
 

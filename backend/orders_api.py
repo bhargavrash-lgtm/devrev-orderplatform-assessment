@@ -8,15 +8,15 @@ SQL safety: values are always parameters. ORDER BY columns come from whitelists,
 only other text built at runtime is "?" placeholders.
 """
 
-import re
 import sqlite3
-from datetime import date, timedelta
+from dataclasses import dataclass
 from typing import Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
 from pydantic import BaseModel, Field
 
-from api_common import ORDER_NOT_FOUND, Where, order_by, page_meta, placeholders, scope_to_user
+from api_common import (ORDER_NOT_FOUND, Where, add_date_range, order_by, page_meta, placeholders,
+                        scope_to_user)
 from auth import get_current_user
 from db import contains_pattern, get_db, iso_utc
 
@@ -33,17 +33,6 @@ ORDER_SORTS = {"created_at": "o.created_at", "total": "o.total", "id": "o.id"}
 
 Page = Query(1, ge=1)
 PageSize = Query(20, ge=1, le=MAX_PAGE_SIZE)
-
-
-def _parse_date(name: str, value: str | None) -> date | None:
-    if value is None:
-        return None
-    try:
-        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
-            raise ValueError
-        return date.fromisoformat(value)
-    except ValueError:
-        raise HTTPException(422, f"{name} must be a date in YYYY-MM-DD format, for example 2026-10-01") from None
 
 
 # --- products ---------------------------------------------------------------------------
@@ -152,8 +141,21 @@ def load_order(conn: sqlite3.Connection, order_id: int, user) -> dict | None:
     return order
 
 
-@router.get("/orders")
-def list_orders(
+@dataclass
+class OrderFilters:
+    id: int | None
+    customer: str | None
+    product: str | None
+    status: str | None
+    client_network: str | None
+    from_: str | None
+    to: str | None
+    page: int
+    page_size: int
+    sort: str | None
+
+
+def order_filters(
     id: int | None = Query(None, ge=1),
     customer: str | None = Query(None, max_length=200, description="Part of the customer name (ops only)"),
     product: str | None = Query(None, max_length=200, description="Part of a product name or SKU on the order"),
@@ -164,45 +166,50 @@ def list_orders(
     page: int = Page,
     page_size: int = PageSize,
     sort: str | None = Query(None, description="created_at, total or id; prefix - for descending"),
-    user=Depends(get_current_user),
-    conn: sqlite3.Connection = Depends(get_db),
-) -> dict:
-    ordering = order_by(sort, ORDER_SORTS, "-created_at", "o.id")
-    start, end = _parse_date("from", from_), _parse_date("to", to)
-    if start and end and start > end:
-        raise HTTPException(422, "from must be on or before to")
+) -> OrderFilters:
+    """The order list's query parameters, shared by /api/orders and /api/customers/{id}/orders."""
+    return OrderFilters(id, customer, product, status, client_network, from_, to, page, page_size, sort)
 
+
+def query_orders(conn: sqlite3.Connection, user, f: OrderFilters, customer_id: int | None = None) -> dict:
+    """A page of orders the user may see, optionally limited to one customer."""
+    ordering = order_by(f.sort, ORDER_SORTS, "-created_at", "o.id")
     where = Where()
     scope_to_user(where, user)
-    if id is not None:
-        where.add("o.id = ?", id)
-    if customer and user["role"] == "ops":  # customers are already scoped to themselves
-        where.add("c.name LIKE ? ESCAPE '\\'", contains_pattern(customer.strip()))
-    if product:
-        pattern = contains_pattern(product.strip())
+    if customer_id is not None:
+        where.add("o.customer_id = ?", customer_id)
+    if f.id is not None:
+        where.add("o.id = ?", f.id)
+    if f.customer and user["role"] == "ops":  # customers are already scoped to themselves
+        where.add("c.name LIKE ? ESCAPE '\\'", contains_pattern(f.customer.strip()))
+    if f.product:
+        pattern = contains_pattern(f.product.strip())
         where.add("EXISTS (SELECT 1 FROM order_items oi JOIN products p ON p.id = oi.product_id "
                   "WHERE oi.order_id = o.id AND (p.name LIKE ? ESCAPE '\\' OR p.sku LIKE ? ESCAPE '\\'))",
                   pattern, pattern)
-    if status:
-        statuses = [s.strip() for s in status.split(",") if s.strip()]
+    if f.status:
+        statuses = [s.strip() for s in f.status.split(",") if s.strip()]
         unknown = [s for s in statuses if s not in ORDER_STATUSES]
         if unknown or not statuses:
             raise HTTPException(422, f"status must be one or more of: {', '.join(ORDER_STATUSES)} (comma-separated)")
         where.add(f"o.order_status IN ({placeholders(len(statuses))})", *statuses)
-    if client_network:
-        where.add("o.client_network = ?", client_network)
-    if start:
-        where.add("o.created_at >= ?", f"{start.isoformat()} 00:00:00")
-    if end:
-        where.add("o.created_at < ?", f"{(end + timedelta(days=1)).isoformat()} 00:00:00")
+    if f.client_network:
+        where.add("o.client_network = ?", f.client_network)
+    add_date_range(where, "o.created_at", f.from_, f.to)
 
     total = conn.execute(f"SELECT COUNT(*) {ORDER_FROM}{where.sql}", where.params).fetchone()[0]
     rows = conn.execute(
         f"SELECT {ORDER_COLUMNS} {ORDER_FROM}{where.sql} ORDER BY {ordering} LIMIT ? OFFSET ?",
-        [*where.params, page_size, (page - 1) * page_size],
+        [*where.params, f.page_size, (f.page - 1) * f.page_size],
     ).fetchall()
     items = _items_by_order(conn, [r["id"] for r in rows])
-    return {"items": [_order_json(r, items[r["id"]]) for r in rows], **page_meta(page, page_size, total)}
+    return {"items": [_order_json(r, items[r["id"]]) for r in rows], **page_meta(f.page, f.page_size, total)}
+
+
+@router.get("/orders")
+def list_orders(filters: OrderFilters = Depends(order_filters), user=Depends(get_current_user),
+                conn: sqlite3.Connection = Depends(get_db)) -> dict:
+    return query_orders(conn, user, filters)
 
 
 @router.get("/orders/{order_id}")

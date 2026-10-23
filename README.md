@@ -43,11 +43,21 @@ JSON over HTTP, served by the backend. Every route except `/api/health` and `/ap
 | `GET` | `/api/orders/{id}/attachments` | anyone who can see the order | Attachment metadata (no file contents) |
 | `POST` | `/api/orders/{id}/attachments` | anyone who can see the order | Upload a file (multipart `file`, optional `issue_id` on the same order). PNG, JPG, PDF or UTF-8 text, checked by content; up to 5 MB |
 | `GET` | `/api/attachments/{id}` | anyone who can see the order | Download as an attachment, with `X-Content-Type-Options: nosniff` |
+| `GET` | `/api/customer` | customer | Their own basic profile: code, name, city, state, addresses, and contacts (name, title, primary) |
+| `GET` | `/api/customers` | ops | Customer master with summary numbers and account owner. Filters `name`, `tier`, `status`, `region`, `account_owner`; `sort` = `name`, `lifetime_value`, `last_order_at`, `unresolved_issues`, `avg_rating`; paged |
+| `GET` | `/api/customers/{id}` | ops | One customer: master, summary numbers, contacts (with email and phone), addresses, account owner |
+| `GET` | `/api/customers/{id}/orders` | ops | That customer's orders, with the same shape and filters as `GET /api/orders` |
+| `GET` | `/api/customers/{id}/timeline` | ops | Orders, issues, messages, feedback and interactions in one stream, newest first. Filters `event_types` (comma-separated), `from`, `to`; paged (up to 200) |
+| `GET` | `/api/customers/{id}/interactions` | ops | Account history (calls, emails, meetings, notes, escalations, renewal talks). Filters `interaction_type`, `sentiment`, `from`, `to`; newest first; paged |
+| `POST` | `/api/customers/{id}/interactions` | ops | Log an interaction: type, summary (5 to 2000 characters), sentiment (default neutral), optional `order_id` of that customer |
+| `GET` | `/api/insights` | ops | Orders by status and client network, unresolved issues by category and severity, issues by status, feedback average and rating distribution, top customers by unresolved issues, recurring issue categories, the 10 latest events, and customers at risk with reasons |
 | `POST` | `/mcp` | holder of `MCP_API_KEY` | Read-only MCP server for an external AI platform (see below) |
 
 List responses look like `{"items": [...], "page": 1, "page_size": 20, "total": 25}`. `page_size` is at most 100.
 
 A customer asking for another customer's order gets the same 404 as for an order that does not exist. The same goes for that order's messages, issues, feedback and attachments. The customer rule is part of every query's SQL, not a check applied afterwards.
+
+**Internal customer data.** Account information is for ops only: interactions, the timeline, sentiment, account owner, contract value, renewal date, status, tier and summary numbers. A customer user gets 403 on every `/api/customers...` route and on `/api/insights`. Their only customer endpoint is `/api/customer`, which returns their own basic profile.
 
 **Attachments.** An upload's type comes from the file's content (magic bytes, or valid UTF-8 for text), and its extension has to match. Files are stored in `backend/uploads/` under random server-made names. The original filename is kept, with any path parts removed, only in the database, for display and downloads. The folder is never served directly: files are only downloaded through `/api/attachments/{id}`, after the same access check as the order.
 

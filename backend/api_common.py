@@ -3,7 +3,9 @@
 SQL text built here only ever comes from constants or whitelists; values go in as parameters.
 """
 
+import re
 import sqlite3
+from datetime import date, timedelta
 
 from fastapi import HTTPException
 
@@ -65,3 +67,26 @@ def visible_order(conn: sqlite3.Connection, order_id: int, user) -> sqlite3.Row:
 def require_customer(user, action: str) -> None:
     if user["role"] != "customer":
         raise HTTPException(403, f"Only customers can {action}")
+
+
+def parse_date(name: str, value: str | None) -> date | None:
+    """A YYYY-MM-DD query parameter, or a 422 with a clear message."""
+    if value is None:
+        return None
+    try:
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+            raise ValueError
+        return date.fromisoformat(value)
+    except ValueError:
+        raise HTTPException(422, f"{name} must be a date in YYYY-MM-DD format, for example 2026-10-01") from None
+
+
+def add_date_range(where: Where, column: str, from_value: str | None, to_value: str | None) -> None:
+    """Inclusive from/to dates (YYYY-MM-DD) on a stored 'YYYY-MM-DD HH:MM:SS' column."""
+    start, end = parse_date("from", from_value), parse_date("to", to_value)
+    if start and end and start > end:
+        raise HTTPException(422, "from must be on or before to")
+    if start:
+        where.add(f"{column} >= ?", f"{start.isoformat()} 00:00:00")
+    if end:
+        where.add(f"{column} < ?", f"{(end + timedelta(days=1)).isoformat()} 00:00:00")
