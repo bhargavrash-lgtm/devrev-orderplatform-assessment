@@ -162,8 +162,10 @@ def test_get_data_schema(client):
 
 
 def test_recurring_issues_by_category(client):
-    result = call(client, "recurring_issues", group_by="category", status="all")
+    result = call(client, "recurring_issues", group_by="category")  # default status: all
     assert result["status_filter"] == "all"
+    assert result["note"].startswith("Filter applied: status='all'")
+    assert "Resolved issues are included" in result["note"]
     groups = {g["group"]: g for g in result["groups"]}
     assert groups["duplicate_order"]["issue_count"] == 4
     assert groups["wrong_item"]["issue_count"] == 3
@@ -176,33 +178,39 @@ def test_recurring_issues_by_category(client):
     assert 1 <= len(dup["examples"]) <= 3
 
 
-def test_recurring_issues_default_excludes_resolved(client, db_path):
-    result = call(client, "recurring_issues", group_by="category", min_count=1)
+def test_recurring_issues_unresolved_filter(client):
+    everything = {g["group"]: g["issue_count"] for g in
+                  call(client, "recurring_issues", group_by="category", min_count=1)["groups"]}
+    result = call(client, "recurring_issues", group_by="category", min_count=1, status="unresolved")
     assert result["status_filter"] == "unresolved"
-    assert "resolved issues are excluded" in result["note"]
-    assert "open or investigating" in result["note"]
-    for group in result["groups"]:
-        assert group["resolved"] == 0
-        assert group["issue_count"] == group["unresolved"]
+    assert result["note"].startswith("Filter applied: status='unresolved' (open or investigating).")
+    assert "Resolved issues are excluded" in result["note"]
+    unresolved = {g["group"]: g for g in result["groups"]}
+
+    # Smaller than the default, and resolved issues are gone.
+    assert unresolved["duplicate_order"]["issue_count"] < everything["duplicate_order"]
+    assert unresolved["wrong_item"]["issue_count"] < everything["wrong_item"]
+    assert sum(g["issue_count"] for g in unresolved.values()) < sum(everything.values())
+    for group in unresolved.values():
+        assert group["resolved"] == 0 and group["issue_count"] == group["unresolved"]
         assert all(e["status"] in ("open", "investigating") for e in group["examples"])
 
-    conn = connect(db_path)
-    expected = conn.execute("SELECT COUNT(*) FROM issues WHERE status IN ('open', 'investigating')").fetchone()[0]
-    conn.close()
-    assert sum(g["issue_count"] for g in result["groups"]) == expected
-    assert "resolved issues are excluded" not in call(client, "recurring_issues", status="all")["note"]
+    # Each group matches list_issues with the same filter.
+    for category, group in unresolved.items():
+        listed = call(client, "list_issues", category=category, status="unresolved", limit=100)
+        assert listed["total"] == group["issue_count"], category
+    assert sum(g["issue_count"] for g in unresolved.values()) == \
+        call(client, "list_issues", status="unresolved", limit=100)["total"]
 
 
 def test_recurring_issues_other_groupings(client):
-    by_product = {g["group"]: g for g in
-                  call(client, "recurring_issues", group_by="product", status="all")["groups"]}
+    by_product = {g["group"]: g for g in call(client, "recurring_issues", group_by="product")["groups"]}
     assert by_product["SD-TOM-AR01"]["categories"] == ["wrong_item"]
     assert by_product["SD-TOM-AR01"]["issue_count"] == 3
-    by_network = {g["group"]: g for g in
-                  call(client, "recurring_issues", group_by="client_network", status="all")["groups"]}
+    by_network = {g["group"]: g for g in call(client, "recurring_issues", group_by="client_network")["groups"]}
     assert by_network["offline_sync"]["categories"] == ["duplicate_order"]
     by_jira = {g["group"]: g["issue_count"] for g in
-               call(client, "recurring_issues", group_by="jira_key", min_count=1, status="all")["groups"]}
+               call(client, "recurring_issues", group_by="jira_key", min_count=1)["groups"]}
     assert by_jira == {"SCRUM-24": 1, "SCRUM-25": 1}
     assert "group_by" in call_error(client, "recurring_issues", group_by="description; DROP TABLE issues")
 
@@ -260,8 +268,14 @@ def test_status_meaning_is_documented(client):
         description = tools[name]["description"]
         assert "unresolved means status is open or investigating" in description
         assert "open means newly reported and not yet being worked on" in description
-        assert tools[name]["inputSchema"]["properties"]["status"]["default"] == "unresolved"
+    assert tools["list_issues"]["inputSchema"]["properties"]["status"]["default"] == "unresolved"
+    assert tools["recurring_issues"]["inputSchema"]["properties"]["status"]["default"] == "all"
+    recurring_default = ("By default recurring_issues looks at all issues, resolved or not, because it is for "
+                         "finding patterns over time. Pass status=unresolved to see only recurrences that are "
+                         "still active.")
+    assert recurring_default in tools["recurring_issues"]["description"]
     schema = call(client, "get_data_schema")
+    assert recurring_default in schema["allowed_values"]["issue_status_filter"]["defaults"]
     assert "unresolved" in schema["allowed_values"]["issue_status_filter"]
     assert "unresolved_issues" in schema["tables"]["customer_summary (view)"]
     assert "open_issues," not in schema["tables"]["customer_summary (view)"]

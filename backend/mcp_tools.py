@@ -24,7 +24,7 @@ CLIENT_NETWORKS = ("good", "weak", "offline_sync")
 ISSUE_CATEGORIES = ("delay", "wrong_item", "damaged", "duplicate_order", "billing", "other")
 ISSUE_SEVERITIES = ("low", "medium", "high")
 ISSUE_STATUSES = ("open", "investigating", "resolved")
-# Status filters for list_issues and recurring_issues. 'unresolved' is the default.
+# Status filters for list_issues and recurring_issues.
 ISSUE_STATUS_FILTERS = {
     "unresolved": ("open", "investigating"),
     "open": ("open",),
@@ -32,9 +32,19 @@ ISSUE_STATUS_FILTERS = {
     "resolved": ("resolved",),
     "all": ISSUE_STATUSES,
 }
-DEFAULT_ISSUE_STATUS = "unresolved"
+ISSUE_STATUS_FILTER_TEXT = {
+    "unresolved": "open or investigating",
+    "open": "newly reported and not yet being worked on",
+    "investigating": "being worked on",
+    "resolved": "closed",
+    "all": "every issue, resolved or not",
+}
+DEFAULT_ISSUE_STATUS = "unresolved"  # list_issues: what still needs attention
+DEFAULT_RECURRING_STATUS = "all"  # recurring_issues: patterns over time, resolved issues included
 ISSUE_STATUS_MEANING = ("unresolved means status is open or investigating; open means newly reported and not yet "
                         "being worked on; all includes resolved issues too.")
+RECURRING_DEFAULT_TEXT = ("By default recurring_issues looks at all issues, resolved or not, because it is for finding "
+                          "patterns over time. Pass status=unresolved to see only recurrences that are still active.")
 TIERS = ("enterprise", "mid_market", "small")
 CUSTOMER_STATUSES = ("active", "at_risk", "churned")
 INTERACTION_TYPES = ("call", "email", "meeting", "note", "escalation", "renewal")
@@ -124,9 +134,9 @@ class Where:
             self.add(f"(lower({alias}.customer_code) = lower(?) OR {alias}.name LIKE ? ESCAPE '\\')",
                      value.strip(), _contains(value.strip()))
 
-    def issue_status(self, status: str | None, alias: str = "i") -> str:
-        """Filter issues by a status filter (default 'unresolved'). Returns the filter used."""
-        status = status or DEFAULT_ISSUE_STATUS
+    def issue_status(self, status: str | None, default: str = DEFAULT_ISSUE_STATUS, alias: str = "i") -> str:
+        """Filter issues by a status filter, using default when none is given. Returns the filter used."""
+        status = status or default
         if status not in ISSUE_STATUS_FILTERS:
             raise ValueError(f"status must be one of: {', '.join(ISSUE_STATUS_FILTERS)}. {ISSUE_STATUS_MEANING}")
         values = ISSUE_STATUS_FILTERS[status]
@@ -259,11 +269,12 @@ def get_data_schema() -> dict:
             "issue_severity": list(ISSUE_SEVERITIES),
             "issue_status": list(ISSUE_STATUSES),
             "issue_status_filter": {
-                "unresolved": "open or investigating (the default for list_issues and recurring_issues)",
+                "unresolved": "open or investigating (the default for list_issues)",
                 "open": "newly reported and not yet being worked on",
                 "investigating": "being worked on",
                 "resolved": "closed",
-                "all": "every issue, including resolved ones",
+                "all": "every issue, resolved or not (the default for recurring_issues)",
+                "defaults": f"list_issues returns unresolved issues unless told otherwise. {RECURRING_DEFAULT_TEXT}",
             },
             "customer_tier": list(TIERS),
             "customer_status": list(CUSTOMER_STATUSES),
@@ -487,7 +498,7 @@ def recurring_issues(conn, group_by: str = "category", min_count: int = 2, statu
                 + (" JOIN order_items oi ON oi.order_id = o.id JOIN products p ON p.id = oi.product_id"
                    if needs_products else ""))
     where = Where()
-    status = where.issue_status(status)
+    status = where.issue_status(status, default=DEFAULT_RECURRING_STATUS)
     where.add(f"{key_sql} IS NOT NULL")
     min_count = max(1, int(min_count))
     groups = conn.execute(
@@ -525,12 +536,14 @@ def recurring_issues(conn, group_by: str = "category", min_count: int = 2, statu
             group["product_name"] = conn.execute("SELECT name FROM products WHERE sku = ?", (g["key"],)).fetchone()[0]
         result.append(group)
 
+    notes = [f"Filter applied: status='{status}' ({ISSUE_STATUS_FILTER_TEXT[status]})."]
     if status == "all":
-        notes = ["All issues are counted, including resolved ones."]
+        notes.append("Resolved issues are included. Pass status=unresolved to see only recurrences that are "
+                     "still active.")
     else:
-        excluded = "; resolved issues are excluded" if status != "resolved" else ""
-        notes = [f"Only issues with status '{status}' are counted{excluded}. {ISSUE_STATUS_MEANING} "
-                 "Pass status='all' to see how often a problem has recurred over time."]
+        if status != "resolved":
+            notes.append("Resolved issues are excluded.")
+        notes.append("Pass status=all to see patterns over time, resolved issues included.")
     if group_by == "product":
         notes.append("An issue counts once for every product on its order.")
     return {"group_by": group_by, "status_filter": status, "min_count": min_count, "groups": result,

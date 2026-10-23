@@ -71,6 +71,8 @@ IssueSeverity = Literal["low", "medium", "high"]
 IssueStatusFilter = Literal["unresolved", "open", "investigating", "resolved", "all"]
 IssueStatus = Annotated[IssueStatusFilter | None, Field(
     description="Issue status filter, default unresolved. " + q.ISSUE_STATUS_MEANING)]
+RecurringIssueStatus = Annotated[IssueStatusFilter | None, Field(
+    description="Issue status filter, default all. " + q.ISSUE_STATUS_MEANING)]
 Tier = Literal["enterprise", "mid_market", "small"]
 CustomerStatus = Literal["active", "at_risk", "churned"]
 InteractionType = Literal["call", "email", "meeting", "note", "escalation", "renewal"]
@@ -172,13 +174,12 @@ def list_issues(
 
 @_tool("Find recurring problems: group issues by category, product, customer, client_network or jira_key and "
        "return groups with at least min_count issues, with status counts (unresolved, open_only, investigating, "
-       "resolved), affected customers and up to 3 example descriptions. Use this to spot recurring bugs. By "
-       "default only unresolved issues are counted: " + q.ISSUE_STATUS_MEANING + " Pass status='all' to "
-       "include resolved issues and see how often a problem has recurred over time.")
+       "resolved), affected customers and up to 3 example descriptions. Use this to spot recurring bugs. "
+       + q.RECURRING_DEFAULT_TEXT + " " + q.ISSUE_STATUS_MEANING)
 def recurring_issues(
     group_by: IssueGroup = "category",
     min_count: Annotated[int, Field(ge=1, description="Smallest group to return.")] = 2,
-    status: IssueStatus = "unresolved",
+    status: RecurringIssueStatus = "all",
 ) -> dict[str, Any]:
     return _run(q.recurring_issues, group_by=group_by, min_count=min_count, status=status)
 
